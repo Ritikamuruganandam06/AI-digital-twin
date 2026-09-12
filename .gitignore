@@ -1,0 +1,40 @@
+# ---- Dependencies ----
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# ---- Build output ----
+dist/
+build/
+*.egg-info/
+.vite/
+
+# ---- Environment / secrets ----
+.env
+.env.*
+!.env.example
+
+# ---- Logs ----
+logs/
+*.log
+npm-debug.log*
+
+# ---- Test / coverage ----
+coverage/
+.pytest_cache/
+.nyc_output/
+
+# ---- Editor / OS ----
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# ---- Misc local state ----
+*.tsbuildinfo
+.cache/
+tmp/
