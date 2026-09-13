@@ -4,14 +4,27 @@ Node.js + TypeScript + Express application. Owns MongoDB, Redis, and Kafka
 integration, the digital twin's data model, the deterministic simulation
 engine, and the internal tool API the AI service calls.
 
-**Phase 6 status:** the digital twin's real data model — `services`
-(topology + dependency graph + health snapshot), `servicemetrics`,
-`events`, and `incidents` — as real MongoDB collections, plus a seed
-script and read/write query endpoints that return the modeled topology.
-This is the first phase where `/api/...` responses are actual product
-data, not a `/api/diagnostics/...` proof. Kafka (Phase 5) is not yet
-wired to any of this — see "Design decisions worth knowing" for why that's
-deliberate, not an oversight.
+**Phase 7 status:** the deterministic simulation engine
+(`src/services/simulation/`) — eight pure, side-effect-free TypeScript
+functions (no Mongo/Redis/Kafka/LLM calls anywhere in this module) that
+compute "what happens if X" against a topology snapshot: service failure,
+traffic increase, database failure, cache failure, high latency, high
+error rate, blast-radius calculation, and bottleneck detection. Per
+docs/phases.md, this phase is scoped to the engine itself plus unit tests
+— there are deliberately no new HTTP endpoints this phase (that's the
+"internal tool API" docs/architecture.md §4 reserves for when the AI
+service actually needs to call these, later).
+
+<details>
+<summary>Phase 6 status (Digital Twin data model) — still accurate, collapsed for length</summary>
+
+The digital twin's real data model — `services` (topology + dependency
+graph + health snapshot), `servicemetrics`, `events`, and `incidents` — as
+real MongoDB collections, plus a seed script and read/write query
+endpoints that return the modeled topology. First phase where `/api/...`
+responses are actual product data, not a `/api/diagnostics/...` proof.
+
+</details>
 
 <details>
 <summary>Phase 5 status (Kafka + KafkaJS) — still accurate, collapsed for length</summary>
@@ -64,9 +77,22 @@ backend/
 │   │   ├── serviceMetric.repository.ts       Phase 6
 │   │   ├── event.repository.ts               Phase 6
 │   │   └── incident.repository.ts            Phase 6
-│   ├── services/                             Phase 6 — business logic above the repository layer (docs/architecture.md §4)
-│   │   ├── topology.service.ts               computeDependents() (pure, unit-tested without a DB) + getServiceTopology()
-│   │   └── incident.service.ts               validates serviceName/affectedServiceNames exist before writing
+│   ├── services/                             business logic above the repository layer (docs/architecture.md §4)
+│   │   ├── topology.service.ts               Phase 6 — computeDependents() (pure) + getServiceTopology()
+│   │   ├── incident.service.ts               Phase 6 — validates serviceName/affectedServiceNames exist before writing
+│   │   └── simulation/                       Phase 7 — the deterministic simulation engine, entirely pure (no I/O)
+│   │       ├── types.ts                      SimulationServiceState (input), SimulationResult/SimulatedServiceImpact (output)
+│   │       ├── constants.ts                  every formula constant, documented, gathered in one place
+│   │       ├── graph.ts                      bfsClosure() + cascadeFromOrigins() — shared graph-traversal primitives
+│   │       ├── blastRadius.ts                calculateBlastRadius() — docs/architecture.md §10's calculate_blast_radius
+│   │       ├── bottleneck.ts                 findBottleneck() — docs/architecture.md §10's find_bottleneck
+│   │       ├── serviceFailure.ts             simulateServiceFailure()
+│   │       ├── trafficIncrease.ts            simulateTrafficIncrease()
+│   │       ├── databaseFailure.ts            simulateDatabaseFailure()
+│   │       ├── cacheFailure.ts               simulateCacheFailure() — degrades, mirrors Phase 4's real cache fallback
+│   │       ├── highLatency.ts                simulateHighLatency()
+│   │       ├── highErrorRate.ts              simulateHighErrorRate()
+│   │       └── index.ts                      barrel export for all of the above
 │   ├── data/seedTopology.ts                  Phase 6 — the 5-service demo topology (User/Order/Payment/Inventory/Notification)
 │   ├── scripts/seed.ts                       Phase 6 — `npm run seed`; destructive, idempotent, seeds services+metrics+events+1 incident
 │   ├── controllers/
@@ -94,7 +120,13 @@ backend/
 │   ├── redis.integration.test.ts          Phase 4 — real SET/GET/TTL + cache-aside proof (needs a real local Redis)
 │   ├── kafka.negative.test.ts             Phase 5 — real failed-Kafka-connection proof, no broker needed
 │   ├── topology.unit.test.ts              Phase 6 — computeDependents(), pure function, no DB needed
-│   └── digitalTwin.integration.test.ts    Phase 6 — real Mongo CRUD across services/metrics/events/incidents (needs Mongo download)
+│   ├── digitalTwin.integration.test.ts    Phase 6 — real Mongo CRUD across services/metrics/events/incidents (needs Mongo download)
+│   └── simulation/                        Phase 7 — one file per scenario function, all pure/no-DB-needed
+│       ├── fixtures.ts                    shared 5-service + 4-node-chain test topologies (not a test file itself)
+│       ├── graph.test.ts, blastRadius.test.ts, bottleneck.test.ts
+│       ├── serviceFailure.test.ts, trafficIncrease.test.ts
+│       ├── databaseFailure.test.ts, cacheFailure.test.ts
+│       └── highLatency.test.ts, highErrorRate.test.ts
 ├── package.json, package-lock.json, tsconfig.json, vitest.config.ts
 └── .env.example
 ```
@@ -246,13 +278,31 @@ curl -s -X POST http://localhost:4000/api/incidents \
 # is a real DB check, not a rubber stamp
 ```
 
+Phase 7 has no HTTP endpoints to `curl` — per docs/phases.md its verification
+is "unit tests covering each scenario's calculated output," so `npm test`
+(next section) *is* the Phase 7 proof. If you want to see it interactively
+anyway, `npx tsx` a one-off script:
+
+```bash
+cat <<'EOF' | npx tsx
+import { simulateServiceFailure } from './src/services/simulation';
+import { SEED_SERVICES } from './src/data/seedTopology';
+import { computeDependents } from './src/services/topology.service';
+
+const dependents = computeDependents(SEED_SERVICES);
+const services = SEED_SERVICES.map((s) => ({ ...s, dependents: dependents[s.name] ?? [] }));
+
+console.log(JSON.stringify(simulateServiceFailure(services, 'payment-service'), null, 2));
+EOF
+```
+
 ## Test
 
 ```bash
 npm test
 ```
 
-Runs eight suites (41 tests total):
+Runs seventeen suites (80 tests total):
 
 - `tests/health.test.ts` (6) — Phase 2, no external services needed.
 - `tests/database.negative.test.ts` (4) — real failed-Mongo-connection proof, no MongoDB needed.
@@ -275,6 +325,11 @@ Runs eight suites (41 tests total):
   the repository layer, not by running `npm run seed`). **Same MongoDB download requirement as
   `diagnosticPing.integration.test.ts`** — fails at `beforeAll` in the same way if
   `fastdl.mongodb.org` is blocked.
+- `tests/simulation/*.test.ts` (39 across 9 files) — every simulation scenario's calculated output,
+  against both the real 5-service seed topology shape and a hand-built 4-node chain (for
+  unambiguous multi-hop distance assertions), plus threshold/edge cases (0x and negative
+  multipliers, a 0% baseline error rate, an unknown service name, an empty topology). No database,
+  no mocking — these functions have no I/O to fake. Verified in this sandbox.
 
 There is deliberately no `kafka.integration.test.ts` in this repository yet
 — see "What could and couldn't be verified here" below for why, and use
@@ -378,6 +433,13 @@ Phase 3, nothing new:**
   independently re-verified in this sandbox. Run `npm test` on your
   machine (or `npm run seed` + the `curl` sequence under "Verify") to
   complete this proof for real.
+
+**Phase 7 (simulation engine) — fully verified here, no external
+infrastructure involved:** every one of the 8 scenario/analysis functions
+is a pure function with zero I/O, so unlike every other phase so far,
+there is no "needs your machine" caveat for Phase 7 at all. `npm test`
+in this sandbox is the real, complete proof — 39/39 simulation tests
+passing here is the same result you'll get.
 
 ## Design decisions worth knowing
 
@@ -492,3 +554,50 @@ Phase 3, nothing new:**
   this service actually exist" check lives in `incident.service.ts`, not
   the repository — same division Phase 3 established
   (`diagnosticPing.repository.ts` never validates, controllers/services do).
+- **The simulation engine is 100% pure — no Mongo, no Redis, no Kafka, no
+  HTTP, no LLM.** Every function takes a `SimulationServiceState[]`
+  snapshot as a plain argument and returns a plain object; nothing in
+  `src/services/simulation/` imports anything from `config/`, `models/`,
+  or `repositories/`. This is what docs/architecture.md §11 means by "no
+  LLM involvement in the calculation itself" taken to its logical
+  conclusion, and it's why this phase's tests need no database at all — a
+  first for this project.
+- **Reconciling two slightly different lists in the architecture doc.**
+  docs/architecture.md §11 names six "simulation types" (service failure,
+  traffic multiplier, database failure, cache failure, high latency, high
+  error rate); §10 names six "simulation" tools (the same four plus
+  `calculate_blast_radius` and `find_bottleneck` instead of the two
+  "high latency"/"high error rate" identifiers). Rather than picking one
+  list over the other, this phase implements all eight — `calculateBlastRadius`
+  turned out to be a genuinely reusable building block for
+  `simulateServiceFailure` (and for `simulateDatabaseFailure`/
+  `simulateCacheFailure` via `cascadeFromOrigins`), not redundant work.
+- **A required-dependency model, not a redundancy-aware one.**
+  `simulateServiceFailure` treats every entry in `dependencies` as hard-required
+  — if a service's dependency fails, the service goes fully `'down'`, never
+  partially degraded. This matches the real scenario docs/architecture.md §1
+  uses as its running example (no Payment Service means no completed orders)
+  and keeps the engine simple; a future phase could add a "critical vs.
+  optional dependency" flag if the topology grows services with real fallback
+  paths.
+- **`dependsOnDatabase`/`dependsOnCache` default to `true`, and live only in
+  the simulation engine's input type, not Phase 6's `Service` schema.**
+  Every service in this topology plausibly touches both, so defaulting to
+  "yes" for an unset value avoids a Phase 6 migration just for this engine
+  to have something to simulate; a later phase can set these per-service in
+  real seed/topology data once the distinction actually matters (e.g. a
+  purely stateless service).
+- **Cache failure degrades; database failure goes down — deliberately
+  different outcomes**, and not just because docs/architecture.md says so:
+  `simulateCacheFailure`'s "slower, not broken" result mirrors the actual
+  runtime behavior `src/cache/cacheAside.ts` already implements since Phase
+  4 (`getOrSetCache()` falls back to the real fetcher when Redis is down).
+  The simulation engine's prediction and the real code's behavior are the
+  same story told twice, which is the point of a *digital twin*.
+- **All propagation formulas are simple, linear, and documented in
+  `constants.ts`, not "realistic."** This is explicitly a deterministic
+  demonstration engine (docs/architecture.md: "deterministic application
+  code computes"), not a capacity-planning tool — every threshold
+  (`TRAFFIC_CAPACITY_MULTIPLIER`, `PROPAGATION_DECAY_FACTOR`, the outage
+  thresholds) is a named, commented constant specifically so it's easy to
+  find and argue with, rather than a magic number buried in a formula.
