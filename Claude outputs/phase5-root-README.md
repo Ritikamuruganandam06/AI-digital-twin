@@ -32,20 +32,16 @@ Start here:
 
 ## Status
 
-**Phases 1–6 complete:** repository scaffolding, the Express app skeleton
+**Phases 1–5 complete:** repository scaffolding, the Express app skeleton
 (health checks, structured logging, correlation IDs, centralized error
-handling), a real MongoDB/Mongoose connection with a verified CRUD proof, a
-real Redis/ioredis connection with a working cache-aside layer in front of
-it, real Kafka/KafkaJS integration (idempotent producer, consumer group,
-dead-letter topic, explicit topic creation) with a producer → topic →
-consumer diagnostic proof, and the digital twin's real data model —
-services (topology + dependency graph + health), metrics, events, and
-incidents as actual MongoDB collections, with a seed script and query
-endpoints that return the modeled topology. See `docs/phases.md` for what
-Phase 7 onward will add, and `backend/README.md` for how to run, seed, and
-verify what exists so far — including exactly which parts of each phase
-could be verified in the sandbox this was built in, and which need your
-own machine (Kafka's broker, in particular).
+handling), a real MongoDB/Mongoose connection with a verified CRUD proof,
+a real Redis/ioredis connection with a working cache-aside layer in front
+of it, and real Kafka/KafkaJS integration (idempotent producer, consumer
+group, dead-letter topic, explicit topic creation) with a producer → topic
+→ consumer diagnostic proof. See `docs/phases.md` for what Phase 6 onward
+will add, and `backend/README.md` for how to run and verify what exists so
+far — including exactly which parts of Phase 5 could be verified in the
+sandbox this was built in, and which need a real broker on your machine.
 
 ## Local development prerequisites
 

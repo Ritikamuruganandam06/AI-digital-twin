@@ -4,10 +4,27 @@ Node.js + TypeScript + Express application. Owns MongoDB, Redis, and Kafka
 integration, the digital twin's data model, the deterministic simulation
 engine, and the internal tool API the AI service calls.
 
-**Phase 4 status:** real Redis connection via ioredis, wired into the same
-health-check registry as MongoDB, plus a working cache-aside proof on top
-of the Phase 3 diagnostic-ping endpoint. Kafka is not wired up yet — that
-starts Phase 5.
+**Phase 6 status:** the digital twin's real data model — `services`
+(topology + dependency graph + health snapshot), `servicemetrics`,
+`events`, and `incidents` — as real MongoDB collections, plus a seed
+script and read/write query endpoints that return the modeled topology.
+This is the first phase where `/api/...` responses are actual product
+data, not a `/api/diagnostics/...` proof. Kafka (Phase 5) is not yet
+wired to any of this — see "Design decisions worth knowing" for why that's
+deliberate, not an oversight.
+
+<details>
+<summary>Phase 5 status (Kafka + KafkaJS) — still accurate, collapsed for length</summary>
+
+Real Kafka integration via KafkaJS — an idempotent producer, a consumer
+group with a dead-letter topic, and explicit topic creation, all wired
+into the same health-check registry as MongoDB and Redis, plus a producer
+→ topic → consumer diagnostic proof mirroring the Phase 3/4 ones. This
+sandbox has no way to reach any Kafka broker distribution (see "What could
+and couldn't be verified here"), so the positive-path proof needs to be
+run on your own machine.
+
+</details>
 
 ## Structure (current)
 
@@ -25,21 +42,59 @@ backend/
 │   │   ├── registry.ts
 │   │   └── checks/
 │   │       ├── mongodb.check.ts   Phase 3
-│   │       └── redis.check.ts     live SET -> GET -> verify TTL proof, registered in server.ts
-│   ├── models/diagnosticPing.model.ts        Mongoose schema (proof-of-CRUD only)
-│   ├── repositories/diagnosticPing.repository.ts   pure Mongo data-access, unchanged since Phase 3
-│   ├── controllers/diagnosticPing.controller.ts    now cache-aside in front of the repository
-│   ├── routes/diagnosticPing.route.ts        mounted at /api/diagnostics/pings
+│   │       ├── redis.check.ts     live SET -> GET -> verify TTL proof, registered in server.ts
+│   │       └── kafka.check.ts     Phase 5 — real admin.describeCluster() round trip
+│   ├── kafka/
+│   │   ├── topics.ts              all topic-name constants for the whole platform (most unused until later phases)
+│   │   ├── ensureTopics.ts        explicit admin.createTopics() instead of relying on broker auto-create
+│   │   ├── consumerFactory.ts     runConsumer() — generic eachMessage wrapper with dead-letter handling
+│   │   ├── producers/diagnosticProducer.ts   Phase 5's own proof-of-Kafka publisher
+│   │   └── consumers/
+│   │       ├── diagnosticConsumer.ts   subscribes to diagnostics.ping, feeds the in-memory store
+│   │       └── store.ts                in-memory ring buffer so consumption is observable over HTTP
+│   ├── models/
+│   │   ├── diagnosticPing.model.ts           Mongoose schema (proof-of-CRUD only)
+│   │   ├── service.model.ts                  Phase 6 — topology node: name, type, dependencies, dependents, health
+│   │   ├── serviceMetric.model.ts            Phase 6 — latency/error-rate/traffic/capacity samples
+│   │   ├── event.model.ts                    Phase 6 — service lifecycle/operational events
+│   │   └── incident.model.ts                 Phase 6 — incidents (manual only this phase; `source` field is forward-compatible)
+│   ├── repositories/
+│   │   ├── diagnosticPing.repository.ts      pure Mongo data-access, unchanged since Phase 3
+│   │   ├── service.repository.ts             Phase 6 — upsertByName (idempotent), findAll, findByName(s)
+│   │   ├── serviceMetric.repository.ts       Phase 6
+│   │   ├── event.repository.ts               Phase 6
+│   │   └── incident.repository.ts            Phase 6
+│   ├── services/                             Phase 6 — business logic above the repository layer (docs/architecture.md §4)
+│   │   ├── topology.service.ts               computeDependents() (pure, unit-tested without a DB) + getServiceTopology()
+│   │   └── incident.service.ts               validates serviceName/affectedServiceNames exist before writing
+│   ├── data/seedTopology.ts                  Phase 6 — the 5-service demo topology (User/Order/Payment/Inventory/Notification)
+│   ├── scripts/seed.ts                       Phase 6 — `npm run seed`; destructive, idempotent, seeds services+metrics+events+1 incident
+│   ├── controllers/
+│   │   ├── diagnosticPing.controller.ts      cache-aside in front of the repository
+│   │   ├── diagnosticKafka.controller.ts     Phase 5 — POST publishes, GET reads the consumed-message store
+│   │   ├── services.controller.ts            Phase 6 — list (cached)/get-with-topology/metrics
+│   │   ├── events.controller.ts              Phase 6 — recent events, optional ?service= filter
+│   │   └── incidents.controller.ts           Phase 6 — list/get/create
+│   ├── routes/
+│   │   ├── diagnosticPing.route.ts           mounted at /api/diagnostics/pings
+│   │   ├── diagnosticKafka.route.ts          mounted at /api/diagnostics/kafka-messages
+│   │   ├── services.route.ts                 Phase 6 — mounted at /api/services
+│   │   ├── events.route.ts                   Phase 6 — mounted at /api/events
+│   │   └── incidents.route.ts                Phase 6 — mounted at /api/incidents
 │   ├── middleware/, routes/health.route.ts, controllers/health.controller.ts,
 │   │   utils/AppError.ts, types/express.d.ts   (Phase 2, unchanged)
 │   ├── app.ts
-│   └── server.ts   now also connects to Redis on boot, disconnects on shutdown
+│   └── server.ts   connects Mongo/Redis/Kafka, ensures Kafka topics, starts the diagnostic
+│       consumer, and registers all three health checks; graceful shutdown for all three
 ├── tests/
 │   ├── health.test.ts                     Phase 2
 │   ├── database.negative.test.ts          Phase 3 — real failed-Mongo-connection proof
 │   ├── diagnosticPing.integration.test.ts Phase 3+4 — real CRUD + cache-aside proof (needs Mongo download + real Redis)
 │   ├── redis.negative.test.ts             Phase 4 — real failed-Redis-connection proof
-│   └── redis.integration.test.ts          Phase 4 — real SET/GET/TTL + cache-aside proof (needs a real local Redis)
+│   ├── redis.integration.test.ts          Phase 4 — real SET/GET/TTL + cache-aside proof (needs a real local Redis)
+│   ├── kafka.negative.test.ts             Phase 5 — real failed-Kafka-connection proof, no broker needed
+│   ├── topology.unit.test.ts              Phase 6 — computeDependents(), pure function, no DB needed
+│   └── digitalTwin.integration.test.ts    Phase 6 — real Mongo CRUD across services/metrics/events/incidents (needs Mongo download)
 ├── package.json, package-lock.json, tsconfig.json, vitest.config.ts
 └── .env.example
 ```
@@ -53,9 +108,10 @@ npm install
 
 ## Run
 
-You need MongoDB reachable at `MONGODB_URI` and Redis reachable at
-`REDIS_URL` (both default to localhost — install them locally per the root
-README's prerequisites if you haven't).
+You need MongoDB reachable at `MONGODB_URI`, Redis reachable at
+`REDIS_URL`, and a Kafka broker reachable at `KAFKA_BROKERS` (all default
+to localhost — install them locally per the root README's prerequisites if
+you haven't; Kafka was already a stated Phase 1 prerequisite).
 
 ```bash
 npm run dev     # tsx watch
@@ -63,10 +119,12 @@ npm run dev     # tsx watch
 npm run build && npm start
 ```
 
-If either MongoDB or Redis isn't reachable, the server **still starts** —
-`/health` reports each one independently as `"down"`, and Redis being down
-specifically makes the diagnostic-ping list endpoint fall back to querying
-MongoDB directly on every request (slower, not broken) instead of failing.
+If MongoDB, Redis, or Kafka isn't reachable, the server **still starts** —
+`/health` reports each one independently as `"down"`, Redis being down
+makes the diagnostic-ping list endpoint fall back to querying MongoDB
+directly on every request (slower, not broken) instead of failing, and
+Kafka being down makes `POST /api/diagnostics/kafka-messages` return `503`
+instead of throwing (the producer/consumer just never started).
 
 **Windows note:** if `npm run dev` fails with `Cannot find module
 './constants'` (or similar) pointing inside `node_modules`, that's a known
@@ -74,16 +132,28 @@ MongoDB directly on every request (slower, not broken) instead of failing.
 `npm run dev:build-watch` + `npm run dev:run-watch` (two terminals) instead,
 or `npm run build && npm start`. Full details in "Common errors" below.
 
+Once MongoDB is up, seed the digital twin's demo data (services, a couple
+hours of fake metrics history, a few events, and one sample incident) —
+**this wipes and replaces** the `services`, `servicemetrics`, `events`,
+and `incidents` collections in whatever `MONGODB_URI` points at, so don't
+run it against a database you care about:
+
+```bash
+npm run seed              # tsx, same as npm run dev
+# or, after npm run build:
+npm run seed:build
+```
+
 ## Verify
 
 ```bash
 curl -i http://localhost:4000/health
 ```
 
-With MongoDB and Redis both up, expect:
+With MongoDB, Redis, and Kafka all up, expect:
 
 ```json
-{"status":"ok","...":"...","checks":{"mongodb":{"status":"ok","latencyMs":1},"redis":{"status":"ok","latencyMs":1}}}
+{"status":"ok","...":"...","checks":{"mongodb":{"status":"ok","latencyMs":1},"redis":{"status":"ok","latencyMs":1},"kafka":{"status":"ok","latencyMs":4}}}
 ```
 
 Then prove cache-aside end to end — watch `cacheHit` flip:
@@ -105,13 +175,84 @@ You can also inspect the cached value directly: `redis-cli GET
 diagnostics:pings:recent:top100` (or `redis-cli TTL ...` to watch the TTL
 count down).
 
+Now the Kafka proof — publish a message, then poll for it to land on the
+consumer side (this is genuinely asynchronous, so the first `GET` right
+after the `POST` may still show it empty for a few hundred milliseconds):
+
+```bash
+curl -s -X POST http://localhost:4000/api/diagnostics/kafka-messages \
+  -H "Content-Type: application/json" -d '{"message":"hello from kafka"}'
+# 202 Accepted: {"data":{"key":"<uuid>","message":"hello from kafka","publishedAt":"..."}}
+
+curl -s http://localhost:4000/api/diagnostics/kafka-messages
+# {"data":[{"key":"<same uuid>","message":"hello from kafka","publishedAt":"...","consumedAt":"...","partition":0,"offset":"0"}]}
+```
+
+The `key` in the GET response matching the `key` from the POST response,
+with a later `consumedAt` than `publishedAt`, is the actual
+producer → broker → consumer round trip — not two independent code paths
+that happen to agree.
+
+To see the dead-letter path for real, publish a message that the consumer
+can't parse by writing directly to the topic with a CLI producer (the
+HTTP endpoint always sends valid JSON, by construction, so this needs a
+lower-level tool):
+
+```bash
+echo "not-json" | kafka-console-producer.sh --broker-list localhost:9092 --topic diagnostics.ping
+```
+
+Then check `diagnostics.ping.dlq` for a message whose `error` field says
+`Unexpected token ... is not valid JSON` and whose `originalValue` is
+`"not-json"`:
+
+```bash
+kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic diagnostics.ping.dlq --from-beginning --max-messages 1
+```
+
+Now the Phase 6 proof — after `npm run seed`, the topology is real MongoDB
+data, not configuration:
+
+```bash
+curl -s http://localhost:4000/api/services | json_pp
+# 5 services: user-service, inventory-service, payment-service,
+# notification-service, order-service — payment-service's health.status
+# is "degraded" on purpose (see src/data/seedTopology.ts)
+
+curl -s http://localhost:4000/api/services/order-service | json_pp
+# resolvedDependencies: the other 4 services, in full
+# resolvedDependents: [] — nothing depends on order-service
+
+curl -s http://localhost:4000/api/services/payment-service | json_pp
+# resolvedDependents: [order-service] — this is the "what happens if
+# Payment Service goes down?" edge docs/architecture.md §3 uses as its
+# running example; order-service is what Phase 7's simulation engine will
+# walk to next
+
+curl -s "http://localhost:4000/api/services/order-service/metrics?limit=5" | json_pp
+curl -s "http://localhost:4000/api/events?service=payment-service" | json_pp
+curl -s http://localhost:4000/api/incidents | json_pp
+# the seeded "Elevated payment gateway latency" incident, status "investigating"
+
+curl -s -X POST http://localhost:4000/api/incidents \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Test incident","description":"manually filed","serviceName":"order-service","severity":"low"}'
+# 201, and it now shows up in GET /api/incidents too
+
+curl -s -X POST http://localhost:4000/api/incidents \
+  -H "Content-Type: application/json" \
+  -d '{"title":"x","description":"y","serviceName":"not-a-real-service","severity":"low"}'
+# 400 — proves the service.repository lookup in src/services/incident.service.ts
+# is a real DB check, not a rubber stamp
+```
+
 ## Test
 
 ```bash
 npm test
 ```
 
-Runs five suites (28 tests total):
+Runs eight suites (41 tests total):
 
 - `tests/health.test.ts` (6) — Phase 2, no external services needed.
 - `tests/database.negative.test.ts` (4) — real failed-Mongo-connection proof, no MongoDB needed.
@@ -120,11 +261,25 @@ Runs five suites (28 tests total):
   local Redis** reachable at `REDIS_URL` (uses logical DB 15 for isolation — your dev data in
   DB 0 is never touched; see the comment at the top of the file for why there's no
   "redis-memory-server" package involved).
+- `tests/kafka.negative.test.ts` (5) — real failed-Kafka-connection proof (connects to
+  `127.0.0.1:1`, a port nothing listens on), no broker needed. Verified in this sandbox.
+- `tests/topology.unit.test.ts` (5) — `computeDependents()` pure-function tests, including against
+  the real seed topology. No database needed. Verified in this sandbox.
 - `tests/diagnosticPing.integration.test.ts` (6) — real Mongo CRUD + real cache-aside proof through
   the actual HTTP endpoint. **Needs both**: a real Redis (same as above) and outbound access to
   `fastdl.mongodb.org` for `mongodb-memory-server`'s one-time binary download. If your network
   blocks that host, this suite fails at `beforeAll` with a `DownloadError` — verify manually with
   the `curl` commands above instead.
+- `tests/digitalTwin.integration.test.ts` (7) — real Mongo CRUD across services/metrics/events/
+  incidents through the actual HTTP endpoints (a hermetic 2-service topology seeded directly via
+  the repository layer, not by running `npm run seed`). **Same MongoDB download requirement as
+  `diagnosticPing.integration.test.ts`** — fails at `beforeAll` in the same way if
+  `fastdl.mongodb.org` is blocked.
+
+There is deliberately no `kafka.integration.test.ts` in this repository yet
+— see "What could and couldn't be verified here" below for why, and use
+the `curl` sequence above to do that positive-path proof by hand on your
+machine.
 
 ## Common errors
 
@@ -142,6 +297,87 @@ Runs five suites (28 tests total):
 - `mongodb-memory-server` `DownloadError` when running tests — outbound
   access to `fastdl.mongodb.org` is blocked on your network. Not a bug.
 - `EADDRINUSE` — port 4000 already in use; change `PORT` in `.env`.
+- `KafkaJSConnectionError` / `KafkaJSNumberOfRetriesExceeded` on startup —
+  no broker reachable at `KAFKA_BROKERS`. The server still starts; `/health`
+  reports `kafka` as `"down"` and `POST /api/diagnostics/kafka-messages`
+  returns `503` instead of a raw error. Start your broker and hit `/health`
+  again — nothing needs to be restarted, but this app only tries to connect
+  once at boot, so you do need to restart *this* process after the broker
+  comes up (Phase 5 doesn't implement a producer reconnect-and-retry loop;
+  that's a reasonable thing to revisit if it becomes a real pain point).
+- `This server does not host this topic` right after topics are first
+  created — a benign, short-lived KafkaJS warning while the new topic's
+  metadata propagates across the cluster. It logs, then resolves itself on
+  retry; if it doesn't resolve, check `ensureTopics()` actually reached
+  your broker.
+- Published a message but `GET /api/diagnostics/kafka-messages` never
+  shows it — check the server logs for `consumer failed to process
+  message` (it will have landed in `diagnostics.ping.dlq` instead), and
+  confirm `KAFKA_CONSUMER_GROUP` didn't change between the publish and the
+  read (a new group ID starts consuming from the current end of the topic,
+  not from messages published before it existed).
+- `GET /api/services` returns `[]` (or `GET /api/services/:name` returns
+  404 for a service you know you seeded) — you probably haven't run
+  `npm run seed` yet, or seeded a different `MONGODB_URI` than the one the
+  server is currently using. `GET /health`'s `mongodb` field tells you
+  which database the server actually connected to only indirectly (it
+  doesn't print the URI) — check your `.env`.
+- `POST /api/incidents` returns `400 Unknown service "..."` — `serviceName`
+  (and every entry in `affectedServiceNames`, if provided) must exactly
+  match a seeded service's `name` (lowercase, hyphenated, e.g.
+  `payment-service`), not its `displayName` (`Payment Service`).
+- Running `npm run seed` twice in a row is expected and safe — it always
+  deletes and re-creates all four collections, so you get the same fixed
+  demo topology every time, not duplicates.
+
+## What could and couldn't be verified here
+
+Same situation as MongoDB in Phase 3: this sandbox has no way to run an
+actual Kafka broker, and unlike Redis (installable via `apt`), there is no
+broker distribution reachable from here at all —
+
+- no `apt` package for a Kafka broker (only client libraries: `librdkafka`,
+  `kcat`, various Go clients),
+- `archive.apache.org`, `downloads.apache.org`, and `repo.maven.apache.org`
+  all return `403` through the sandbox's egress proxy — the same
+  organization-policy block that stops `fastdl.mongodb.org` in Phase 3,
+  not something route-around-able,
+- no Redpanda or other Kafka-API-compatible broker available either.
+
+So what's actually been verified here, versus what needs your machine:
+
+- **Compiles and typechecks clean** (`npx tsc --noEmit`, `npm run build`) —
+  verified.
+- **Every piece of code that can be exercised without a live broker is
+  exercised for real** in `tests/kafka.negative.test.ts`: a genuine
+  `connect()` attempt against `127.0.0.1:1` (a port nothing listens on)
+  rejecting, the health check correctly reporting `"down"`, `/health`
+  returning `503`, and the diagnostic POST endpoint returning a clean `503`
+  through `errorHandler` rather than an unhandled exception — verified.
+- **The producer → broker → consumer round trip, consumer groups actually
+  distributing partitions, and the dead-letter path actually catching a
+  malformed message** — this needs a real broker responding to real
+  `admin.createTopics()`/`producer.send()`/`consumer.run()` calls, which
+  this sandbox cannot provide. This is not verified here. Run the `curl`
+  (and `kafka-console-producer.sh`/`kafka-console-consumer.sh`) sequence
+  under "Verify" above on your own machine, where Kafka is already a
+  stated Phase 1 prerequisite, to complete this proof.
+
+**Phase 6 (MongoDB data model) — same MongoDB-binary-download limitation as
+Phase 3, nothing new:**
+
+- **Compiles and typechecks clean**, and every piece of Phase 6 logic that
+  doesn't need a real MongoDB — `computeDependents()`'s pure-function
+  behavior, including against the actual seed topology — is verified here
+  (`tests/topology.unit.test.ts`, 5/5 passing in this sandbox).
+- **The real MongoDB proof** (`tests/digitalTwin.integration.test.ts`:
+  seed → query → resolve dependencies/dependents → create an incident →
+  reject an unknown service) needs `mongodb-memory-server`'s one-time
+  binary download, which is blocked here the same way
+  `diagnosticPing.integration.test.ts` already was in Phase 3 — **not**
+  independently re-verified in this sandbox. Run `npm test` on your
+  machine (or `npm run seed` + the `curl` sequence under "Verify") to
+  complete this proof for real.
 
 ## Design decisions worth knowing
 
@@ -173,3 +409,86 @@ Runs five suites (28 tests total):
   (`SELECT 0`–`15`) on a single running instance, so test isolation is a
   `flushdb()` scoped to DB 15 rather than spinning up a separate process.
   Your real dev data (DB 0) is never touched by the test suite.
+- **The producer is idempotent (`kafka.producer({ idempotent: true })`).**
+  If a `send()` needs to be retried after a network blip, KafkaJS
+  de-duplicates it at the broker so the retried message isn't written
+  twice — the "idempotency" requirement from the spec, actually enabled,
+  not just mentioned in a comment.
+- **Every message carries an explicit key** (`producers/diagnosticProducer.ts`).
+  Kafka routes all messages sharing a key to the same partition, which is
+  what guarantees per-key ordering. This diagnostic producer uses a random
+  key per message purely to demonstrate that keyed messages spread across
+  `diagnostics.ping`'s 3 partitions; a real producer (Phase 6's
+  `service.events`, say) would key by something meaningful like `serviceId`
+  so every event for one service stays in order.
+- **Topics are created explicitly (`ensureTopics()` / `admin.createTopics()`),
+  not left to broker auto-creation.** Most real clusters disable
+  auto-creation, and relying on it would hand every topic whatever
+  `num.partitions` default the broker happens to have instead of a
+  deliberate partition count.
+- **One shared consumer group per consumer (`KAFKA_CONSUMER_GROUP`).**
+  If you ever run two instances of this backend against the same broker,
+  they'll automatically split `diagnostics.ping`'s partitions between them
+  instead of each processing every message — that's what a consumer group
+  is for. A single instance simply gets all the partitions.
+- **`runConsumer()` is generic**, the same pattern as `getOrSetCache()` —
+  it takes a `groupId`, a `topic`, an optional `dlqTopic`, and an
+  `onMessage` handler, so Phase 6+ consumers (service events, simulation
+  events, agent events) reuse the same dead-letter wiring instead of each
+  reimplementing try/catch-and-republish.
+- **A message that fails processing still gets its offset committed.**
+  `consumerFactory.ts` catches the error, logs it, and (if a `dlqTopic` is
+  configured) republishes the message there with the error attached — but
+  either way, KafkaJS commits the offset once `eachMessage` returns, so one
+  permanently-bad message can't stall the whole partition by being retried
+  forever. The trade-off: a *transient* failure (a downstream service
+  briefly down) also moves on rather than retrying, which is why the
+  producer's idempotency and any downstream retry logic matter more than
+  consumer-side retries here.
+- **KafkaJS's own console-based logger is disabled and routed through
+  pino** (`logLevel: logLevel.NOTHING` + a custom `logCreator` in
+  `config/kafka.ts`), the same reasoning as everywhere else in this
+  codebase: one structured JSON log stream in production, not a second,
+  differently-formatted one from a dependency.
+- **`dependents` is always derived, never hand-typed.** A service document
+  stores both `dependencies` and `dependents` (docs/architecture.md §5
+  calls for both), but only `dependencies` is ever written by a human or
+  the seed script — `dependents` is computed by
+  `computeDependents()` (`src/services/topology.service.ts`, a pure
+  function with no I/O) and persisted as the derived reverse edge. This
+  makes it structurally impossible for the two directions of the graph to
+  drift out of sync, and it's the one piece of Phase 6 logic that's fully
+  unit-tested without any database at all (`tests/topology.unit.test.ts`).
+- **`src/services/` is genuinely a new layer, not a renamed repository.**
+  docs/architecture.md §4 reserves `services/` for business logic above
+  data access; `topology.service.ts` composes two repository calls
+  (`findByNames` for dependencies, `findByNames` for dependents) into one
+  view, and `incident.service.ts` validates a `serviceName` is real before
+  `incident.repository.ts` ever touches Mongo. Controllers call the
+  service layer, never the repository layer, directly.
+- **Kafka isn't wired into any Phase 6 write path, on purpose.**
+  docs/architecture.md §7 lists `service.events` and `incidents` as topics,
+  but names their real producers as the simulation engine / health monitor
+  (Phase 7+) and the agent's privileged create-incident tool (Phase 11) —
+  neither exists yet. Producing onto those topics from `POST
+  /api/incidents` now would mean inventing a producer that has nothing
+  real to say, which is exactly the kind of "configuration pretending to
+  be infrastructure" this project's verification-first rule exists to
+  prevent. This gets revisited for real once Phase 7/11 give those events
+  actual content.
+- **The service list is cached, nothing about it is invalidated.** Unlike
+  the diagnostic-ping cache, no endpoint in this phase writes to the
+  `services` collection at request time (only `npm run seed` does, offline),
+  so `twin:services:all` simply expires after its TTL rather than needing
+  an invalidation call — there's no write path to hang one off yet.
+- **The seed script is destructive and idempotent, not additive.** It
+  deletes and fully re-creates `services`/`servicemetrics`/`events`/
+  `incidents` every run rather than trying to merge with whatever's already
+  there. For a fixed demo topology this is simpler and more robust than
+  upsert-merge logic across four related collections, at the cost of being
+  unsafe to run against data you want to keep — documented plainly above
+  and in the script's own header comment.
+- **`incident.repository.ts` stays a dumb data-access seam.** The "does
+  this service actually exist" check lives in `incident.service.ts`, not
+  the repository — same division Phase 3 established
+  (`diagnosticPing.repository.ts` never validates, controllers/services do).

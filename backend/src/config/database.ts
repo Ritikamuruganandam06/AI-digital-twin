@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { env } from './env';
 import { logger } from './logger';
+import { AppError } from '../utils/AppError';
 
 /**
  * MongoDB connection lifecycle, kept separate from any one route/model so
@@ -43,4 +44,18 @@ export async function disconnectFromDatabase(): Promise<void> {
 /** readyState: 0 disconnected, 1 connected, 2 connecting, 3 disconnecting. */
 export function isDatabaseConnected(): boolean {
   return mongoose.connection.readyState === 1;
+}
+
+/**
+ * Shared by every controller that touches Mongo (diagnosticPing since
+ * Phase 3; services/events/incidents from Phase 6 on) — fails fast with a
+ * meaningful 503 instead of letting a Mongoose call hang or throw a raw
+ * driver error up to the generic error handler. Extracted here (was a
+ * private copy inside diagnosticPing.controller.ts) so Phase 6's new
+ * controllers don't each redefine the same check.
+ */
+export function assertDatabaseConnected(): void {
+  if (!isDatabaseConnected()) {
+    throw new AppError('Database is currently unavailable', 503);
+  }
 }

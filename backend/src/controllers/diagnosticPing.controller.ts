@@ -1,19 +1,8 @@
 import { RequestHandler } from 'express';
 import { diagnosticPingRepository } from '../repositories/diagnosticPing.repository';
-import { isDatabaseConnected } from '../config/database';
+import { assertDatabaseConnected } from '../config/database';
 import { getOrSetCache, invalidateCache } from '../cache/cacheAside';
 import { AppError } from '../utils/AppError';
-
-/**
- * Fails fast with a meaningful 503 instead of letting a Mongoose call hang
- * or throw a raw driver error up to the generic error handler — "do not
- * silently swallow errors" cuts both ways: a down database should say so.
- */
-function assertDatabaseConnected(): void {
-  if (!isDatabaseConnected()) {
-    throw new AppError('Database is currently unavailable', 503);
-  }
-}
 
 /**
  * Phase 4 cache-aside demo: a single well-known key caches the 100 most
