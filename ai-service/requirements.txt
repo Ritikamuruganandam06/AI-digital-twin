@@ -1,0 +1,23 @@
+# Phase 8: FastAPI service skeleton + HTTP boundary to the Node backend.
+# Phase 9: Groq chat-completion client. Phase 10: tool schemas + agent
+# tool-calling loop. Phase 11: Qdrant client + embedding pipeline -- see
+# docs/phases.md.
+
+fastapi>=0.115,<0.116
+uvicorn[standard]>=0.32,<0.33
+httpx>=0.27,<0.28
+# Loads ai-service/.env into the process environment (app/config.py) --
+# the same role backend/src/config/env.ts's dotenv.config() call has in
+# the Node backend.
+python-dotenv>=1.0,<1.1
+
+# Phase 11 (app/rag/): the real Qdrant client, and fastembed for local,
+# ONNX-based (no PyTorch) embedding generation -- see
+# app/rag/embedding.py's module docstring for why this combination was
+# chosen over sentence-transformers or a paid embedding API.
+qdrant-client>=1.19,<1.20
+fastembed>=0.8,<0.9
+
+# Test dependencies
+pytest>=8.3,<8.4
+pytest-asyncio>=0.24,<0.25

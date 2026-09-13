@@ -4,16 +4,38 @@ Node.js + TypeScript + Express application. Owns MongoDB, Redis, and Kafka
 integration, the digital twin's data model, the deterministic simulation
 engine, and the internal tool API the AI service calls.
 
-**Phase 7 status:** the deterministic simulation engine
-(`src/services/simulation/`) — eight pure, side-effect-free TypeScript
-functions (no Mongo/Redis/Kafka/LLM calls anywhere in this module) that
-compute "what happens if X" against a topology snapshot: service failure,
-traffic increase, database failure, cache failure, high latency, high
-error rate, blast-radius calculation, and bottleneck detection. Per
-docs/phases.md, this phase is scoped to the engine itself plus unit tests
-— there are deliberately no new HTTP endpoints this phase (that's the
-"internal tool API" docs/architecture.md §4 reserves for when the AI
-service actually needs to call these, later).
+**Phase 10 status:** the internal tool API (`src/tools/`), mounted at
+`/internal/tools` — 18 uncached HTTP routes across three privilege tiers
+(docs/architecture.md §10) that the AI service's agent loop calls as
+tools: 8 read-only routes (thin wrappers over the Phase 6 services/
+repositories), 8 simulation routes (thin wrappers over Phase 7's pure
+engine, fed real topology via the new `src/tools/simulationAdapter.ts`
+seam that `services/simulation/index.ts`'s own Phase 7 comment
+anticipated), and 2 privileged routes — `GET
+/internal/tools/recommend-scaling/:name` (new `recommendation.service.ts`;
+non-mutating, safe to auto-execute) and `POST
+/internal/tools/create-incident` (mutating; this route itself still just
+writes the incident like Phase 6's public endpoint does — it's the AI
+service's tool *executor*, not this route, that's responsible for never
+calling it without a human decision in the loop, see
+`ai-service/README.md`). No new business logic was invented for this
+phase — every handler in `src/tools/tools.controller.ts` and
+`simulationTools.controller.ts` calls existing Phase 6/7 code.
+
+<details>
+<summary>Phase 7 status (deterministic simulation engine) — still accurate, collapsed for length</summary>
+
+The deterministic simulation engine (`src/services/simulation/`) — eight
+pure, side-effect-free TypeScript functions (no Mongo/Redis/Kafka/LLM
+calls anywhere in this module) that compute "what happens if X" against a
+topology snapshot: service failure, traffic increase, database failure,
+cache failure, high latency, high error rate, blast-radius calculation,
+and bottleneck detection. Per docs/phases.md, that phase was scoped to the
+engine itself plus unit tests, with deliberately no new HTTP endpoints —
+Phase 10 is what finally puts these behind the "internal tool API"
+docs/architecture.md §4 reserved for them.
+
+</details>
 
 <details>
 <summary>Phase 6 status (Digital Twin data model) — still accurate, collapsed for length</summary>
@@ -101,6 +123,11 @@ backend/
 │   │   ├── services.controller.ts            Phase 6 — list (cached)/get-with-topology/metrics
 │   │   ├── events.controller.ts              Phase 6 — recent events, optional ?service= filter
 │   │   └── incidents.controller.ts           Phase 6 — list/get/create
+│   ├── tools/                                 Phase 10 — mounted at /internal/tools, not /api/*
+│   │   ├── tools.controller.ts               8 read-only tool handlers, thin wrappers over Phase 6 services/repositories
+│   │   ├── simulationTools.controller.ts     8 simulation tool handlers (the 8 functions from Phase 7)
+│   │   ├── simulationAdapter.ts              ServiceRecord (Mongo) -> SimulationServiceState (engine input)
+│   │   └── tools.route.ts                    all 18 routes; read-only + simulation + 2 privileged
 │   ├── routes/
 │   │   ├── diagnosticPing.route.ts           mounted at /api/diagnostics/pings
 │   │   ├── diagnosticKafka.route.ts          mounted at /api/diagnostics/kafka-messages
@@ -109,7 +136,8 @@ backend/
 │   │   └── incidents.route.ts                Phase 6 — mounted at /api/incidents
 │   ├── middleware/, routes/health.route.ts, controllers/health.controller.ts,
 │   │   utils/AppError.ts, types/express.d.ts   (Phase 2, unchanged)
-│   ├── app.ts
+│   ├── services/recommendation.service.ts    Phase 10 — computeScalingRecommendation() (pure) + recommendScalingForService()
+│   ├── app.ts   Phase 10 — mounts toolsRouter at /internal/tools
 │   └── server.ts   connects Mongo/Redis/Kafka, ensures Kafka topics, starts the diagnostic
 │       consumer, and registers all three health checks; graceful shutdown for all three
 ├── tests/
@@ -121,12 +149,14 @@ backend/
 │   ├── kafka.negative.test.ts             Phase 5 — real failed-Kafka-connection proof, no broker needed
 │   ├── topology.unit.test.ts              Phase 6 — computeDependents(), pure function, no DB needed
 │   ├── digitalTwin.integration.test.ts    Phase 6 — real Mongo CRUD across services/metrics/events/incidents (needs Mongo download)
-│   └── simulation/                        Phase 7 — one file per scenario function, all pure/no-DB-needed
-│       ├── fixtures.ts                    shared 5-service + 4-node-chain test topologies (not a test file itself)
-│       ├── graph.test.ts, blastRadius.test.ts, bottleneck.test.ts
-│       ├── serviceFailure.test.ts, trafficIncrease.test.ts
-│       ├── databaseFailure.test.ts, cacheFailure.test.ts
-│       └── highLatency.test.ts, highErrorRate.test.ts
+│   ├── simulation/                        Phase 7 — one file per scenario function, all pure/no-DB-needed
+│   │   ├── fixtures.ts                    shared 5-service + 4-node-chain test topologies (not a test file itself)
+│   │   ├── graph.test.ts, blastRadius.test.ts, bottleneck.test.ts
+│   │   ├── serviceFailure.test.ts, trafficIncrease.test.ts
+│   │   ├── databaseFailure.test.ts, cacheFailure.test.ts
+│   │   └── highLatency.test.ts, highErrorRate.test.ts
+│   ├── recommendation.unit.test.ts        Phase 10 — computeScalingRecommendation(), pure function, no DB needed
+│   └── tools.integration.test.ts          Phase 10 — all 18 /internal/tools routes against a real 3-node chain topology (needs Mongo download)
 ├── package.json, package-lock.json, tsconfig.json, vitest.config.ts
 └── .env.example
 ```
@@ -296,13 +326,45 @@ console.log(JSON.stringify(simulateServiceFailure(services, 'payment-service'), 
 EOF
 ```
 
+Phase 10's `/internal/tools/*` routes are meant to be called by the AI
+service's agent loop, not curled by hand — but every route is a plain
+`GET`/`POST` like any other, so they're just as curl-able for a direct
+proof:
+
+```bash
+curl -s http://localhost:4000/internal/tools/services | json_pp
+# same shape as GET /api/services, but uncached — read straight through
+# to MongoDB on every call, since an agent's tool calls need fresh data
+# more than they need a 30s-stale cache
+
+curl -s http://localhost:4000/internal/tools/bottleneck | json_pp
+curl -s http://localhost:4000/internal/tools/blast-radius/payment-service | json_pp
+curl -s -X POST http://localhost:4000/internal/tools/simulate/service-failure \
+  -H "Content-Type: application/json" -d '{"serviceName":"payment-service"}' | json_pp
+# same calculation Phase 7's unit tests already cover, now reachable over
+# HTTP against the real, currently-seeded topology instead of a fixture
+
+curl -s http://localhost:4000/internal/tools/recommend-scaling/payment-service | json_pp
+# non-mutating — safe to call directly; this is the one privileged tool
+# the AI service's executor is allowed to auto-execute
+
+curl -s -X POST http://localhost:4000/internal/tools/create-incident \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Test","description":"manual proof","serviceName":"order-service","severity":"low"}'
+# 201 — this route itself really does write to MongoDB (same
+# incident.service.ts Phase 6's public /api/incidents endpoint uses); the
+# guarantee that the agent can PROPOSE but never SILENTLY EXECUTE this one
+# lives one layer up, in ai-service/app/tools/executor.py, which never
+# calls this route at all — see ai-service/README.md's Phase 10 section
+```
+
 ## Test
 
 ```bash
 npm test
 ```
 
-Runs seventeen suites (80 tests total):
+Runs nineteen suites (100 tests total):
 
 - `tests/health.test.ts` (6) — Phase 2, no external services needed.
 - `tests/database.negative.test.ts` (4) — real failed-Mongo-connection proof, no MongoDB needed.
@@ -330,6 +392,16 @@ Runs seventeen suites (80 tests total):
   unambiguous multi-hop distance assertions), plus threshold/edge cases (0x and negative
   multipliers, a 0% baseline error rate, an unknown service name, an empty topology). No database,
   no mocking — these functions have no I/O to fake. Verified in this sandbox.
+- `tests/recommendation.unit.test.ts` (4) — Phase 10 — `computeScalingRecommendation()`'s pure
+  formula (down -> `scale_out` at 2x replicas, degraded -> `scale_out` at 1.5x, healthy -> no
+  recommendation). No database needed. Verified in this sandbox.
+- `tests/tools.integration.test.ts` (16) — Phase 10 — every one of the 18 `/internal/tools/*`
+  routes exercised through supertest against a real 3-node chain topology (`db-service` ->
+  `api-service` -> `web-service`), including the create-incident route actually writing to
+  MongoDB and the read-only routes reflecting real repository data. **Needs the same
+  `mongodb-memory-server` binary download** as `diagnosticPing.integration.test.ts` and
+  `digitalTwin.integration.test.ts` — correctly skips here for the same reason, not independently
+  re-verified in this sandbox.
 
 There is deliberately no `kafka.integration.test.ts` in this repository yet
 — see "What could and couldn't be verified here" below for why, and use
@@ -440,6 +512,33 @@ is a pure function with zero I/O, so unlike every other phase so far,
 there is no "needs your machine" caveat for Phase 7 at all. `npm test`
 in this sandbox is the real, complete proof — 39/39 simulation tests
 passing here is the same result you'll get.
+
+**Phase 10 (internal tool API) — same MongoDB-binary-download limitation
+as Phase 3/6, nothing new, plus one genuine live wiring proof this sandbox
+*could* do:**
+
+- **Compiles and typechecks clean** (`npx tsc --noEmit`, `npm run build`),
+  and the one piece of Phase 10 logic with no I/O —
+  `computeScalingRecommendation()`'s pure formula — is fully verified here
+  (`tests/recommendation.unit.test.ts`, 4/4 passing).
+- **The real MongoDB proof for all 18 routes**
+  (`tests/tools.integration.test.ts`) needs the same
+  `mongodb-memory-server` binary download blocked here since Phase 3 — not
+  independently re-verified in this sandbox. Run `npm test` on your
+  machine to complete this proof for real.
+- **The real cross-process wiring** — a real `node dist/server.js` process
+  actually listening on `/internal/tools/*` and returning real (if
+  DB-less) responses — **was** verified here: with no MongoDB reachable in
+  this sandbox, `GET /internal/tools/services` and `GET
+  /internal/tools/bottleneck` both returned a genuine `503 Database is
+  currently unavailable` from the real running process (the same
+  `assertDatabaseConnected()` guard every Phase 6 route already uses), not
+  a mock or a stub. This is the same honest partial proof Phase 8 gave for
+  `GET /api/backend/services`. See `ai-service/README.md`'s Phase 10
+  section for the other half: the AI service's agent loop making a real,
+  unmocked outbound call that (in this sandbox) reaches Groq's real API
+  boundary and is blocked only by this sandbox's own egress policy, not by
+  anything wrong in the code.
 
 ## Design decisions worth knowing
 
@@ -601,3 +700,45 @@ passing here is the same result you'll get.
   (`TRAFFIC_CAPACITY_MULTIPLIER`, `PROPAGATION_DECAY_FACTOR`, the outage
   thresholds) is a named, commented constant specifically so it's easy to
   find and argue with, rather than a magic number buried in a formula.
+- **`/internal/tools/*` is a separate, uncached mount, not a reuse of
+  `/api/*`.** Same underlying business logic, but the public routes are
+  cache-aside (a 30s-stale answer is fine for a dashboard) while an
+  agent's tool calls should see the current state at investigation time —
+  and keeping them physically separate also means nothing here is exposed
+  to a browser by accident. `docs/tools.route.ts`'s own header comment
+  says the route path isn't part of the tool contract the LLM sees at
+  all — only the tool's name and JSON-schema parameters are (defined on
+  the AI-service side, `ai-service/app/tools/schemas.py`) — so the two
+  files are kept in sync by hand, documented on both sides, rather than
+  generated from one shared source that doesn't exist yet.
+- **Every tool handler is a thin wrapper, not new business logic.** All 18
+  routes in `src/tools/` call existing Phase 6 services/repositories or
+  Phase 7 simulation functions directly; the only genuinely new code this
+  phase added is `recommendation.service.ts` (a small, pure scaling
+  formula) and `simulationAdapter.ts` (a type-mapping seam with no
+  business logic of its own). This keeps Phase 10 what docs/phases.md row
+  10 actually asks for — "tool schemas + tool execution loop against
+  backend tool API" — rather than an excuse to redesign the domain logic
+  a second time.
+- **`POST /internal/tools/create-incident` itself is not where the
+  "propose, don't silently execute" guarantee lives.** This route writes
+  to MongoDB exactly like Phase 6's public `POST /api/incidents` — trying
+  to make the *route* refuse to execute would mean either a fake
+  always-pending status in the database (a lie about what the database
+  actually contains) or a second, parallel "proposed incidents" collection
+  invented for this one phase. Instead the guarantee is enforced entirely
+  on the AI-service side, in `ai-service/app/tools/executor.py`: the
+  dispatch table for `create_incident` never calls this route's client
+  function at all, no matter what the LLM asks for — see
+  `ai-service/README.md`'s Phase 10 design decisions for the full
+  reasoning and the test that pins this down
+  (`test_create_incident_is_privileged_mutating_and_never_calls_the_real_backend`).
+- **All 8 simulation functions are exposed as tools, matching Phase 7's
+  own resolution of the same architecture-doc discrepancy.** §10 names six
+  "simulation" tools, §11 names six "simulation types" — a slightly
+  different six (swapping `calculate_blast_radius`/`find_bottleneck` for
+  "high latency"/"high error rate" identifiers). Phase 7 already resolved
+  this by implementing all 8 functions rather than picking one list as
+  authoritative; Phase 10 carries that same resolution forward into the
+  tool layer for consistency, rather than arbitrarily under-exposing two
+  of Phase 7's own functions.

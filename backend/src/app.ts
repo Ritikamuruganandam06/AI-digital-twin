@@ -11,6 +11,7 @@ import { diagnosticKafkaRouter } from './routes/diagnosticKafka.route';
 import { servicesRouter } from './routes/services.route';
 import { eventsRouter } from './routes/events.route';
 import { incidentsRouter } from './routes/incidents.route';
+import { toolsRouter } from './tools/tools.route';
 
 /**
  * Builds an Express app without starting a listener. Kept separate from
@@ -37,6 +38,7 @@ export function createApp(): Application {
   app.use('/api/services', servicesRouter);
   app.use('/api/events', eventsRouter);
   app.use('/api/incidents', incidentsRouter);
+  app.use('/internal/tools', toolsRouter);
 
   // Must be last: notFound catches anything no router matched, errorHandler
   // catches anything thrown/passed to next() by everything above it.

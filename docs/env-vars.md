@@ -35,7 +35,7 @@ defaults; production values are never hardcoded anywhere in source.
 | `BACKEND_BASE_URL` | base URL of the Node.js backend tool API | `http://localhost:4000` |
 | `QDRANT_URL` | Qdrant connection URL | `http://localhost:6333` |
 | `QDRANT_COLLECTION` | collection name for knowledge chunks | `knowledge_base` |
-| `EMBEDDING_MODEL` | embedding model identifier (chosen and justified in Phase 11) | TBD — Phase 11 |
+| `EMBEDDING_MODEL` | fastembed model identifier used to turn text into vectors (justified in `ai-service/app/rag/embedding.py`) | `BAAI/bge-small-en-v1.5` |
 | `AGENT_MAX_ITERATIONS` | hard cap on tool-call loop iterations | `6` |
 | `AGENT_TOOL_TIMEOUT_MS` | per-tool-call timeout | `10000` |
 | `LOG_LEVEL` | structured logger level | `info` |
