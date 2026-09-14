@@ -6,9 +6,55 @@ embedding, Qdrant retrieval) — see `../docs/architecture.md` §2, §8, §15.
 Talks to the backend only through its HTTP tool API — never directly to
 MongoDB, Redis, or Kafka.
 
-## Phase 11 status: Qdrant + embedding model
+## Phase 12 status: RAG ingestion and retrieval
 
-Implemented now, alongside (not on top of) Phase 10's agent loop — these
+Implemented now, on top of Phase 11's embedding pipeline and Qdrant
+client:
+
+- **`../knowledge/` is now real** — 7 markdown documents across
+  architecture/runbooks/incidents/troubleshooting (`system-architecture.md`,
+  `payment-service-recovery.md`, `redis-failure-runbook.md`,
+  `kafka-consumer-recovery.md`, `incident-payment-outage.md`,
+  `high-latency-troubleshooting.md`, `high-error-rate-troubleshooting.md`),
+  each with a small frontmatter block (`title`/`related_service`/`updated`)
+  and real, specific content about *this* project's own modeled system —
+  not generic placeholder text. See `../knowledge/README.md`.
+- `app/rag/loader.py` — parses a document's frontmatter and derives
+  `document_id`/`source_path`/`document_type` from its path (the folder
+  a document lives in IS its type — never an independent frontmatter
+  value that could disagree with it).
+- `app/rag/chunker.py` — splits a document's body into overlapping
+  chunks, attaching the full metadata schema docs/architecture.md §12
+  calls for (document id, chunk id, source path, document type, related
+  service, version/timestamp). `CHUNK_SIZE_CHARS=1000` /
+  `CHUNK_OVERLAP_CHARS=150`, justified in the module's own docstring
+  against this knowledge base's actual document shape (see "Design
+  decisions" below for the summary).
+- `app/rag/ingest.py` — `ingest_knowledge_base(knowledge_root)`: loads
+  every document, chunks it, embeds every chunk (Phase 11's
+  `embed_texts()`), and upserts them into Qdrant (Phase 11's
+  `ensure_collection()`/`upsert_points()`) with a deterministic point id
+  per chunk, so re-running ingestion after editing a document updates its
+  points in place rather than duplicating them. Runnable directly:
+  `python -m app.rag.ingest`.
+- `app/rag/retriever.py` — `retrieve(question, top_k, score_threshold)`:
+  docs/phases.md row 12's actual "retriever" deliverable. Embeds the
+  question, searches Qdrant, and drops anything scoring below
+  `DEFAULT_SCORE_THRESHOLD` (0.5) before returning — "no relevant
+  knowledge found" is a normal return value (an empty list), not an
+  error.
+
+Deliberately **not** in this phase (`docs/phases.md` row 12's scope is
+"chunking pipeline, `knowledge/` documents ingested, retriever" — nothing
+more): nothing wired into the agent loop or a new HTTP endpoint — Phase
+13 ("Agent + Tools + RAG orchestration") is what decides *when* to call
+`retrieve()` at all, the same way Phase 11's Qdrant client stayed
+unwired until this phase gave it something real to search.
+
+<details>
+<summary>Phase 11 status (Qdrant + embedding model) — still accurate, collapsed for length</summary>
+
+Implemented then, alongside (not on top of) Phase 10's agent loop — these
 are independent, not sequential dependencies:
 
 - `app/rag/embedding.py` — turns text into vectors. Uses
@@ -39,6 +85,8 @@ Phase 12, once real runbook/incident documents exist to chunk" — picking
 them now, against no real documents, would be exactly the kind of
 premature design this project avoids. Deciding *when* to retrieve at all
 is Phase 13's job ("Agent + Tools + RAG orchestration").
+
+</details>
 
 <details>
 <summary>Phase 10 status (agent tool calling) — still accurate, collapsed for length</summary>
@@ -129,7 +177,7 @@ anywhere else yet — Phase 10 is what wires it into the agent loop against
 
 </details>
 
-## Structure (through Phase 11)
+## Structure (through Phase 12)
 
 ```
 ai-service/
@@ -146,9 +194,13 @@ ai-service/
 │   │   └── backend_client.py  the ONLY code that talks to the Node backend directly (Phase 8's boundary proof; NOT a tool)
 │   ├── llm/
 │   │   └── groq_client.py     the ONLY code that talks to Groq (Phase 9; tools/tool_choice added in Phase 10)
-│   ├── rag/                    Phase 11 — not yet wired into anything else
-│   │   ├── embedding.py        embed_text()/embed_texts() via fastembed, get_embedding_dimension()
-│   │   └── qdrant_client.py    ensure_collection()/upsert_points()/search() against a real Qdrant instance
+│   ├── rag/                    not yet wired into anything else -- see Phase 12's own "Deliberately not" note
+│   │   ├── embedding.py        Phase 11 — embed_text()/embed_texts() via fastembed, get_embedding_dimension()
+│   │   ├── qdrant_client.py    Phase 11 — ensure_collection()/upsert_points()/search() against a real Qdrant instance
+│   │   ├── loader.py           Phase 12 — parses knowledge/*.md frontmatter, derives metadata from path
+│   │   ├── chunker.py          Phase 12 — chunk_document(): CHUNK_SIZE_CHARS=1000 / CHUNK_OVERLAP_CHARS=150
+│   │   ├── ingest.py           Phase 12 — ingest_knowledge_base(): loader -> chunker -> embed -> upsert; `python -m app.rag.ingest`
+│   │   └── retriever.py        Phase 12 — retrieve(): embed question -> search -> relevance-filter -> chunks
 │   ├── tools/                  Phase 10
 │   │   ├── schemas.py          TOOL_DEFINITIONS / TOOL_SCHEMAS / TOOL_PRIVILEGE (18 tools, 4 privilege tiers)
 │   │   ├── backend_tools_client.py   one async function per tool -> backend/src/tools/* route
@@ -167,15 +219,19 @@ ai-service/
 │   ├── test_agent_endpoint.py           Phase 10 — HTTP layer only, run_agent mocked
 │   ├── test_agent_live.py               Phase 10 — REAL end-to-end: real Groq + real backend, both required
 │   ├── test_embedding.py                Phase 11 — mostly mocked (always run) + one REAL, unmocked semantic-similarity proof
-│   └── test_qdrant_client.py            Phase 11 — a REAL negative-connection proof (always run) + a REAL embed->upsert->search proof (needs real Qdrant)
+│   ├── test_qdrant_client.py            Phase 11 — a REAL negative-connection proof (always run) + a REAL embed->upsert->search proof (needs real Qdrant)
+│   ├── test_loader.py                   Phase 12 — REAL, against the actual knowledge/ documents (always run, no network needed)
+│   ├── test_chunker.py                  Phase 12 — REAL, against the actual knowledge/ documents (always run, no network needed)
+│   ├── test_ingest.py                   Phase 12 — orchestration logic, embedding/Qdrant mocked (always run)
+│   ├── test_retriever.py                Phase 12 — score-filtering logic, embedding/Qdrant mocked (always run)
+│   └── test_rag_live.py                 Phase 12 — THE real "question -> relevant chunks" proof (needs real Qdrant + model download)
 ├── requirements.txt
 ├── pytest.ini
 └── .env.example
 ```
 
-Chunking (`app/rag/chunker.py` or similar) from the eventual structure in
-`../docs/architecture.md` §4 is intentionally still not created — it's
-Phase 12's job, once real `knowledge/` documents exist to chunk.
+`../knowledge/` (7 real markdown documents, Phase 12) is the other half
+of this phase's file tree — see `../knowledge/README.md`.
 
 ## Install
 
@@ -301,6 +357,48 @@ outbound access to `huggingface.co`); everything after requires a real
 Qdrant instance reachable at `QDRANT_URL`. Neither is available in this
 build sandbox — see "What could and couldn't be verified here."
 
+Phase 12's verification is exactly `docs/phases.md` row 12's own wording:
+"Question -> relevant chunks retrieved, with justified chunk size/overlap".
+No new HTTP endpoint here either — this is still infrastructure/pipeline
+work, not something a user or the agent calls directly yet (that's Phase
+13). Ingest the real knowledge base, then ask real questions against it:
+
+```bash
+cd ai-service
+source .venv/bin/activate
+python -m app.rag.ingest
+# Ingested 7 document(s) into 43 chunk(s) (collection created).
+
+python3 -c "
+from app.rag.retriever import retrieve
+
+for chunk in retrieve('What should I do if payment-service is down?'):
+    print(f'{chunk.score:.3f}  {chunk.document_id}  ({chunk.related_service})')
+"
+```
+
+With a real Qdrant instance and the model downloaded, the top result
+should be a chunk from `runbooks/payment-service-recovery`, scoring
+noticeably higher than anything from an unrelated document — that's the
+actual "relevant chunks retrieved" proof. Chunking itself (the other half
+of this phase's verification — "justified chunk size/overlap") needs
+neither Qdrant nor a network call and **is proven in this build sandbox**
+right now:
+
+```bash
+python3 -c "
+from pathlib import Path
+from app.rag.loader import load_all_documents
+from app.rag.chunker import chunk_document
+
+for doc in load_all_documents(Path('../knowledge')):
+    chunks = chunk_document(document_id=doc.document_id, source_path=doc.source_path,
+        document_type=doc.document_type, related_service=doc.related_service,
+        title=doc.title, updated=doc.updated, body=doc.body)
+    print(f'{doc.source_path:50s} {len(chunks)} chunks')
+"
+```
+
 ## Tests
 
 ```bash
@@ -309,11 +407,9 @@ source .venv/bin/activate
 pytest -v
 ```
 
-54 tests. `tests/test_groq_client_live.py`, `tests/test_agent_live.py`,
-and one test in `tests/test_embedding.py` +
-`tests/test_qdrant_client.py` each require real, unmocked network access
-this build sandbox doesn't have and are **automatically skipped** here —
-4 skips total, 50 passed:
+75 tests. Five require real, unmocked network access this build sandbox
+doesn't have and are **automatically skipped** here — 5 skips total, 70
+passed:
 
 - `test_groq_client_live.py` — real Groq call; skipped, `GROQ_API_KEY` unset.
 - `test_agent_live.py` — real Groq call that (if it decides to) makes a
@@ -327,20 +423,27 @@ this build sandbox doesn't have and are **automatically skipped** here —
 - `test_qdrant_client.py::test_embed_upsert_search_round_trip_against_a_real_qdrant_instance`
   — the real embed -> upsert -> search proof `docs/phases.md` row 11
   asks for; skipped, no Qdrant instance reachable at `QDRANT_URL`.
+- `test_rag_live.py::test_ingest_the_real_knowledge_base_then_retrieve_relevant_chunks_for_real_questions`
+  — Phase 12's own "Question -> relevant chunks retrieved" proof, ingesting
+  the real 7-document knowledge base and retrieving against it; skipped,
+  same two preconditions as the Qdrant round-trip test.
 
-Everything else — including
-`test_qdrant_client.py::test_functions_raise_a_clean_error_when_qdrant_is_unreachable`,
-a REAL (not mocked) connection-refused proof against `127.0.0.1:1`, the
-same technique `backend/tests/kafka.negative.test.ts` uses for Kafka —
-mocks only its actual external network boundary (`httpx`/Groq/the tool
-executor/the embedding model, as appropriate) and needs no real
-credentials or running services; all pass in this sandbox. None of the 4
+Everything else — including two fully REAL (not mocked, no network
+needed) proofs against this project's actual `knowledge/` documents,
+`test_loader.py::test_load_all_documents_against_the_real_knowledge_base`
+and `test_chunker.py::test_chunking_the_real_knowledge_base_produces_sane_output`,
+plus `test_qdrant_client.py::test_functions_raise_a_clean_error_when_qdrant_is_unreachable`
+(a REAL connection-refused proof against `127.0.0.1:1`, the same
+technique `backend/tests/kafka.negative.test.ts` uses for Kafka) — mocks
+only its actual external network boundary (`httpx`/Groq/the tool
+executor/the embedding model/Qdrant, as appropriate) and needs no real
+credentials or running services; all pass in this sandbox. None of the 5
 skipped tests' proofs has been run for real by pytest itself here — the
 manual commands under "Verify" above substitute for that, following the
 same deferral pattern Phase 5 used for the Kafka broker. Set a real
-`GROQ_API_KEY`, start the Node backend, and start a real Qdrant instance,
-then re-run `pytest -v` to get all four proofs from pytest itself on your
-machine.
+`GROQ_API_KEY`, start the Node backend, and start a real Qdrant instance
+with normal internet access, then re-run `pytest -v` to get all five
+proofs from pytest itself on your machine.
 
 ## What could and couldn't be verified here
 
@@ -382,8 +485,71 @@ What's actually been verified here, versus what needs your machine:
   README's prerequisites; no Docker) at `QDRANT_URL` and run
   `pytest tests/test_qdrant_client.py` to complete this proof on your
   machine.
+- **Phase 12 — the entire knowledge/loader/chunker pipeline is fully
+  verified here, for real, against this project's actual 7 documents** —
+  `test_loader.py` and `test_chunker.py`'s real-knowledge-base tests need
+  neither Qdrant nor a network call, and pass in this sandbox exactly as
+  they would anywhere else. **The embedding + Qdrant half — actually
+  ingesting those chunks and retrieving them for a real question — is not
+  verified here**, for the same two reasons as Phase 11 (`huggingface.co`
+  and Qdrant both unreachable, confirmed above). Start a real Qdrant
+  instance with normal internet access and run `pytest tests/test_rag_live.py`
+  (or `python -m app.rag.ingest` plus the `python3 -c` snippet under
+  "Verify") to get docs/phases.md row 12's actual "Question -> relevant
+  chunks retrieved" proof on your machine.
 
 ## Design decisions
+
+**Phase 12:**
+
+- **7 real, substantive documents, not placeholder text.** Each averages
+  ~600-700 words of specific, internally-consistent content about *this*
+  project's own modeled 5-service topology (the same services/dependency
+  graph Phase 6 seeded) — a generic "Lorem ipsum"-style knowledge base
+  would have made the chunk-size justification and the retrieval proof
+  both meaningless, since there would be nothing real to chunk correctly
+  or retrieve relevantly.
+- **A hand-rolled frontmatter parser, not PyYAML.** The schema is three
+  flat string fields (`title`/`related_service`/`updated`) — adding a
+  YAML dependency for that is the kind of unnecessary-dependency scope
+  creep this project's ground rules rule out (mirrors why Phase 11 chose
+  fastembed's plain-httpx style over adding more surface area than
+  needed).
+- **`document_type` comes from the folder, never from frontmatter.**
+  `knowledge/README.md`'s planned structure already makes the folder a
+  document lives in its type (architecture/runbooks/incidents/
+  troubleshooting) — letting frontmatter also set a "type" would just
+  create a second source of truth that could silently disagree with
+  where the file actually lives.
+- **Deterministic point ids (`uuid5` of the chunk id), not random ones.**
+  Re-running `python -m app.rag.ingest` after editing a document updates
+  that document's points in Qdrant in place (upsert semantics) instead of
+  leaving stale duplicate points behind from the pre-edit version — the
+  same "idempotent, safe to re-run" property `ensureTopics()` has for
+  Kafka topics.
+- **Chunk boundaries respect paragraph structure, with a sentence-level
+  fallback for an oversized paragraph** — see `chunker.py`'s own
+  docstring for the full chunk-size/overlap justification against this
+  knowledge base's real document shape. One real bug this surfaced
+  during development: naively appending the overlap tail from a full
+  chunk onto the next full-size paragraph could push that combination
+  past `CHUNK_SIZE_CHARS` — caught by
+  `test_chunking_the_real_knowledge_base_produces_sane_output` failing
+  against the real documents (not a synthetic edge case), fixed by
+  skipping the overlap for that one boundary when tail+paragraph together
+  wouldn't fit, rather than ever exceeding the hard size cap.
+- **The relevance-score threshold (`DEFAULT_SCORE_THRESHOLD = 0.5`) is
+  explicitly flagged as unvalidated, not presented as tuned.** It's a
+  reasonable starting point for BAAI/bge-small-en-v1.5's typical score
+  distribution, but this sandbox cannot actually run a retrieval query
+  against real embeddings to check it empirically — see
+  `retriever.py`'s own docstring. Claiming it was "tuned" without being
+  able to observe a single real result would be exactly the kind of
+  unverified infrastructure claim this project's ground rules prohibit.
+- **No new HTTP endpoint, and nothing wired into the agent loop.** Same
+  reasoning as Phase 11 and Phase 9: `docs/phases.md` row 12 asks for a
+  chunking pipeline, ingested documents, and a retriever — not a decision
+  about *when* to retrieve, which is explicitly Phase 13's job.
 
 **Phase 11:**
 

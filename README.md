@@ -152,13 +152,41 @@ uses — is verified here for real: 50 passed, 4 skipped, all for confirmed
 reasons, no failures. See `ai-service/README.md`'s Phase 11 section for
 the exact commands to complete the real round-trip proof on your machine.
 
-See `docs/phases.md` for what Phase 12 onward will add, and
+**Phase 12 complete:** the knowledge base is now real, and there's a
+working chunking → embedding → Qdrant ingestion pipeline plus a retriever
+on top of it. `knowledge/` holds 7 substantive markdown documents across
+architecture/runbooks/incidents/troubleshooting — specific, internally
+consistent content about this project's own modeled 5-service topology,
+not placeholder text (see `knowledge/README.md`). `ai-service/app/rag/loader.py`
+parses each document's frontmatter; `chunker.py` splits it into
+overlapping chunks (`CHUNK_SIZE_CHARS=1000`/`CHUNK_OVERLAP_CHARS=150`,
+justified in the module's own docstring against these documents' real
+shape — resolving `docs/architecture.md` §12's "chosen and justified
+concretely in Phase 12" requirement); `ingest.py` ties loader, chunker,
+and Phase 11's embedding/Qdrant modules together
+(`python -m app.rag.ingest`); and `retriever.py`'s `retrieve(question)`
+is the actual "retriever" deliverable, applying a relevance-score filter
+before returning chunks. Deliberately not in this phase: wiring any of
+this into the agent loop or a new HTTP endpoint — deciding *when* to
+retrieve is Phase 13's job. **One honest caveat:** row 12's verification
+is "Question → relevant chunks retrieved" — the chunking half of that is
+fully verified here, for real, against the actual 7 documents (no network
+needed); the embedding+Qdrant half is not, for the same reasons as Phase
+11 (`huggingface.co` and Qdrant both unreachable from this sandbox,
+confirmed directly, not assumed). One real bug surfaced and fixed during
+this phase: the chunker's overlap logic could push a chunk past its size
+cap when a full-size paragraph followed a full chunk — caught by a test
+running against the real documents, not a synthetic edge case. 70 passed,
+5 skipped, all for confirmed reasons, no failures.
+
+See `docs/phases.md` for what Phase 13 onward will add, and
 `backend/README.md` / `ai-service/README.md` for how to run, seed, and
 verify what exists so far — including exactly which parts of each phase
 could be verified in the sandbox this was built in, and which need your
 own machine (Kafka's broker, MongoDB's live data, a real Groq API key,
-and now a real Qdrant instance, in particular — Phase 7's engine, by
-contrast, needed no external infrastructure at all to verify).
+and a real Qdrant instance with normal internet access, in particular —
+Phase 7's engine, by contrast, needed no external infrastructure at all
+to verify).
 
 ## Local development prerequisites
 
