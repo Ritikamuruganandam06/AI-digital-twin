@@ -6,6 +6,7 @@ import { requestLogger } from './middleware/requestLogger';
 import { notFound } from './middleware/notFound';
 import { errorHandler } from './middleware/errorHandler';
 import { authenticate } from './middleware/authenticate';
+import { rateLimiter } from './middleware/rateLimiter';
 import { healthRouter } from './routes/health.route';
 import { authRouter } from './routes/auth.route';
 import { diagnosticPingRouter } from './routes/diagnosticPing.route';
@@ -46,7 +47,15 @@ export function createApp(): Application {
   // /internal/tools stays outside JWT auth too: it's a separate
   // service-to-service trust boundary between the AI service and this
   // backend (docs/architecture.md §15), not user-facing RBAC.
+  //
+  // Phase 16: rateLimiter is mounted on /api broadly, ahead of every /api
+  // route including /api/auth -- unlike authenticate, it deliberately
+  // covers the unauthenticated auth routes too, since login/register are
+  // exactly what a brute-force/credential-stuffing attempt would target.
+  // /health and /internal/tools are excluded for the same reasons they're
+  // excluded from authenticate above.
   app.use('/health', healthRouter);
+  app.use('/api', rateLimiter);
   app.use('/api/auth', authRouter);
   app.use('/api/diagnostics/pings', authenticate, diagnosticPingRouter);
   app.use('/api/diagnostics/kafka-messages', authenticate, diagnosticKafkaRouter);

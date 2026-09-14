@@ -4,7 +4,64 @@ Node.js + TypeScript + Express application. Owns MongoDB, Redis, and Kafka
 integration, the digital twin's data model, the deterministic simulation
 engine, and the internal tool API the AI service calls.
 
-**Phase 15 status:** JWT authentication + role-based authorization
+**Phase 16 status:** Reliability patterns (docs/phases.md row 16:
+"Timeouts, retries, circuit breaker, rate limiting, idempotency, DLQ, AI
+iteration/timeout limits"), added only where a concrete failure mode was
+identified — docs/architecture.md §17's own rule — after auditing what
+was already real: connection timeouts (Mongo, Redis, Kafka, every
+outbound HTTP client), Redis's own bounded retry-with-backoff, Kafka's
+producer idempotency and consumer-group retry, and the Kafka DLQ
+republish path (`src/kafka/consumerFactory.ts`, since Phase 5) were all
+already genuine, not new. What was missing: `src/utils/retry.ts`
+(`withRetry()`) and `src/utils/circuitBreaker.ts` (`CircuitBreaker`, a
+hand-implemented CLOSED→OPEN→HALF_OPEN→CLOSED state machine, the same
+"hand-roll the core mechanism" choice this project made for the agent
+loop and cache-aside) are new, generic, dependency-free primitives, both
+proven correct in complete isolation (`tests/retry.unit.test.ts`,
+`tests/circuitBreaker.unit.test.ts`) before being wired into
+`src/clients/aiServiceClient.ts`'s `invokeAgent()`: one retry for a true
+connection failure only (never a timeout, never a non-2xx — the AI
+service either never got the request, or it answered for real), wrapped
+in a circuit breaker (3 consecutive failures trips it, 30s cooldown) so a
+genuinely-down AI service fails fast instead of every call paying its own
+45s timeout.
+
+`src/middleware/rateLimiter.ts` is the first code anywhere in this
+project to read `RATE_LIMIT_WINDOW_MS`/`RATE_LIMIT_MAX`, which have sat
+unused in `.env.example` since Phase 1: a Redis-backed fixed-window
+counter (`INCR` + `PEXPIRE`), mounted on `/api/*` ahead of even
+`/api/auth` (so it also protects login/register from brute force, not
+just already-authenticated traffic) — `/health` and `/internal/tools/*`
+stay excluded, the same trust-boundary reasoning Phase 15's `authenticate`
+already used. `src/middleware/idempotency.ts` is opt-in via an
+`Idempotency-Key` header, wired only to `POST /api/incidents` — the one
+real, reachable, mutating endpoint with genuine client-retry risk, not
+`POST /internal/tools/create-incident` (still unreachable from the
+agent's normal dispatch path, per its own docstring, so idempotency there
+would be speculative). Both new middleware **fail open**: an
+unreachable Redis makes a request unprotected, not broken, the same
+posture `src/cache/cacheAside.ts` already established. Neither new
+threshold (retry counts, circuit-breaker cooldowns, rate-limit window/max
+now that they're finally read) became a new env var beyond the two that
+already existed — matching the standing "each phase extends `env.ts` to
+read exactly the variables it starts using" discipline, not "every
+internal constant becomes configurable."
+
+`tests/kafka.dlq.integration.test.ts` is new too: a real, automated
+failure-injection proof (publish a non-JSON message directly to
+`diagnostics.ping`, assert it's republished to `diagnostics.ping.dlq`
+with the expected `error`/`originalValue` shape) closing the gap the
+Phase 5 section below used to describe as "deliberately no
+`kafka.integration.test.ts` in this repository yet." See "Design
+decisions worth knowing" for the full reasoning behind each pattern's
+scope, and "What could and couldn't be verified here" for exactly which
+of this phase's proofs need real infrastructure this sandbox doesn't
+have.
+
+<details>
+<summary>Phase 15 status (JWT auth + RBAC) — still accurate, collapsed for length</summary>
+
+JWT authentication + role-based authorization
 (docs/phases.md row 15: "JWT, RBAC (USER/OPERATOR/ADMIN)"), the first
 phase that makes any `/api/*` route actually require a caller to be who
 they say they are. A new `users` collection
@@ -51,6 +108,8 @@ inventing throwaway credentials each time. See "Design decisions worth
 knowing" for why self-registration allows choosing a role, why JWTs are
 verified statelessly, and why `authorize()` is rank-based rather than an
 exact-match set.
+
+</details>
 
 <details>
 <summary>Phase 14 status (agent execution trace persistence) — still accurate, collapsed for length</summary>
@@ -154,9 +213,9 @@ backend/
 │   │   ├── logger.ts
 │   │   ├── database.ts    Phase 3
 │   │   └── redis.ts       connectToRedis()/disconnectFromRedis()/isRedisConnected()/getRedisClient()
-│   │       env.ts also + jwtSecret, jwtExpiresIn (Phase 15)
+│   │       env.ts also + jwtSecret, jwtExpiresIn (Phase 15); + rateLimitWindowMs, rateLimitMax (Phase 16 — first code to read them, unused since Phase 1)
 │   ├── clients/
-│   │   └── aiServiceClient.ts   Phase 14 — invokeAgent(): POST {AI_SERVICE_URL}/agent/invoke; the ONLY code that talks to the AI service (mirrors ai-service/app/clients/backend_client.py's role, opposite direction)
+│   │   └── aiServiceClient.ts   Phase 14 — invokeAgent(): POST {AI_SERVICE_URL}/agent/invoke; the ONLY code that talks to the AI service (mirrors ai-service/app/clients/backend_client.py's role, opposite direction); Phase 16 — wraps the fetch in withRetry() + a shared CircuitBreaker
 │   ├── cache/
 │   │   └── cacheAside.ts  getOrSetCache()/invalidateCache() — generic, reusable cache-aside helper
 │   ├── health/
@@ -191,7 +250,9 @@ backend/
 │   │   └── user.repository.ts                Phase 15 — create/findByEmail/findById, same dumb data-access seam
 │   ├── utils/
 │   │   ├── AppError.ts                       Phase 2
-│   │   └── jwt.ts                            Phase 15 — signAccessToken()/verifyAccessToken(), stateless (no DB lookup)
+│   │   ├── jwt.ts                            Phase 15 — signAccessToken()/verifyAccessToken(), stateless (no DB lookup)
+│   │   ├── retry.ts                          Phase 16 — withRetry(): generic exponential-backoff retry, opt-in isRetryable predicate
+│   │   └── circuitBreaker.ts                 Phase 16 — CircuitBreaker: hand-implemented CLOSED->OPEN->HALF_OPEN->CLOSED state machine
 │   ├── services/                             business logic above the repository layer (docs/architecture.md §4)
 │   │   ├── topology.service.ts               Phase 6 — computeDependents() (pure) + getServiceTopology()
 │   │   ├── incident.service.ts               Phase 6 — validates serviceName/affectedServiceNames exist before writing
@@ -232,19 +293,22 @@ backend/
 │   │   ├── diagnosticKafka.route.ts          mounted at /api/diagnostics/kafka-messages (behind authenticate as of Phase 15)
 │   │   ├── services.route.ts                 Phase 6 — mounted at /api/services (behind authenticate as of Phase 15)
 │   │   ├── events.route.ts                   Phase 6 — mounted at /api/events (behind authenticate as of Phase 15)
-│   │   ├── incidents.route.ts                Phase 6 — mounted at /api/incidents; Phase 15 — POST additionally requires authorize('OPERATOR')
+│   │   ├── incidents.route.ts                Phase 6 — mounted at /api/incidents; Phase 15 — POST additionally requires authorize('OPERATOR'); Phase 16 — POST also goes through idempotency
 │   │   ├── assistant.route.ts                Phase 14 — mounted at /api/assistant (behind authenticate as of Phase 15)
 │   │   ├── agentExecutions.route.ts          Phase 14 — mounted at /api/executions (behind authenticate as of Phase 15)
-│   │   └── auth.route.ts                     Phase 15 — mounted at /api/auth, deliberately NOT behind authenticate
+│   │   └── auth.route.ts                     Phase 15 — mounted at /api/auth, deliberately NOT behind authenticate (still behind rateLimiter as of Phase 16)
 │   ├── middleware/
 │   │   ├── requestId.ts, requestLogger.ts, notFound.ts, errorHandler.ts   Phase 2, unchanged
 │   │   ├── authenticate.ts                   Phase 15 — verifies a Bearer JWT, attaches req.user; stateless, no DB lookup
-│   │   └── authorize.ts                      Phase 15 — authorize(minimumRole): rank check (USER < OPERATOR < ADMIN) on top of authenticate
+│   │   ├── authorize.ts                      Phase 15 — authorize(minimumRole): rank check (USER < OPERATOR < ADMIN) on top of authenticate
+│   │   ├── rateLimiter.ts                    Phase 16 — Redis-backed fixed-window counter (INCR+PEXPIRE), mounted on /api/* ahead of /api/auth; fails open
+│   │   └── idempotency.ts                    Phase 16 — opt-in Idempotency-Key header, Redis-backed claim+replay; wired only to POST /api/incidents; fails open
 │   ├── routes/health.route.ts, controllers/health.controller.ts, types/express.d.ts
 │   │   (Phase 2; express.d.ts + req.user as of Phase 15)
 │   ├── services/recommendation.service.ts    Phase 10 — computeScalingRecommendation() (pure) + recommendScalingForService()
 │   ├── app.ts   Phase 10 mounts toolsRouter at /internal/tools; Phase 14 mounts assistantRouter + agentExecutionsRouter;
-│   │   Phase 15 mounts authRouter (unauthenticated) and wires `authenticate` explicitly onto every other /api/* mount
+│   │   Phase 15 mounts authRouter (unauthenticated) and wires `authenticate` explicitly onto every other /api/* mount;
+│   │   Phase 16 mounts `rateLimiter` on /api ahead of every /api/* route including /api/auth
 │   └── server.ts   connects Mongo/Redis/Kafka, ensures Kafka topics, starts the diagnostic
 │       consumer, and registers all three health checks; graceful shutdown for all three
 ├── tests/
@@ -274,7 +338,15 @@ backend/
 │   ├── authMiddleware.unit.test.ts        Phase 15 — authenticate()/authorize() called directly (not through supertest): every rejection path (missing header, no Bearer scheme, garbage token, expired token, wrong role claim, wrong secret, insufficient rank, missing req.user), no DB needed
 │   ├── auth.route.unit.test.ts            Phase 15 — POST /api/auth/register + /login HTTP layer, auth.service mocked, no DB needed
 │   ├── auth.integration.test.ts           Phase 15 — the phase's own verification requirement ("privileged endpoints reject insufficient roles; tests per role") against a real MongoDB: real register -> login -> Bearer token -> authenticate -> authorize, USER/OPERATOR/ADMIN all exercised against POST /api/incidents (needs Mongo download)
-│   └── helpers/testAuth.ts                Phase 15 — signTestToken()/authHeader(): signs a REAL JWT with src/utils/jwt.ts's own function, used by every other test file below that now hits an authenticated route
+│   ├── helpers/testAuth.ts                Phase 15 — signTestToken()/authHeader(): signs a REAL JWT with src/utils/jwt.ts's own function, used by every other test file below that now hits an authenticated route
+│   ├── retry.unit.test.ts                 Phase 16 — withRetry(), fake timers, no I/O needed
+│   ├── circuitBreaker.unit.test.ts        Phase 16 — CircuitBreaker's full state machine including OPEN->HALF_OPEN timing, fake timers, no I/O needed
+│   ├── aiServiceClient.resilience.unit.test.ts   Phase 16 — invokeAgent()'s actual retry+breaker wiring (retry-then-succeed, retry-then-fail, no-retry-on-timeout, no-retry-on-non-2xx, breaker trips and fails fast), fetch mocked + module reloaded per test for a fresh breaker
+│   ├── rateLimiter.unit.test.ts           Phase 16 — pure decision logic, Redis mocked: fail-open, under/at/over the limit, PEXPIRE only on the first increment
+│   ├── rateLimiter.integration.test.ts    Phase 16 — real Redis: per-IP window enforcement, a real PEXPIRE-backed TTL (needs a real local Redis)
+│   ├── idempotency.unit.test.ts           Phase 16 — pure decision logic, Redis mocked: opt-in, fail-open, claim/replay/409-on-concurrent-duplicate, 5xx releases the lock instead of caching it
+│   ├── idempotency.integration.test.ts    Phase 16 — real Mongo + real Redis: a retried POST /api/incidents creates exactly one incident and replays the same response (needs Mongo download + a real local Redis)
+│   └── kafka.dlq.integration.test.ts      Phase 16 — real broker failure-injection proof: a non-JSON message on diagnostics.ping lands on diagnostics.ping.dlq with the expected shape (needs a real Kafka broker)
 ├── package.json, package-lock.json, tsconfig.json, vitest.config.ts
 └── .env.example
 ```
@@ -585,13 +657,49 @@ curl -i -s -X POST http://localhost:4000/api/assistant/ask \
 # service at http://localhost:8000/agent/invoke: ...","requestId":"..."}}
 ```
 
+Phase 16's idempotency proof — the same `POST /api/incidents` request,
+sent twice with the same `Idempotency-Key`, must create exactly one
+incident and return the identical response both times (needs a real
+Redis reachable at `REDIS_URL`, since idempotency fails open without
+one):
+
+```bash
+IDEMPOTENCY_KEY=$(uuidgen 2>/dev/null || echo "manual-proof-key-1")
+
+curl -s -X POST http://localhost:4000/api/incidents \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $IDEMPOTENCY_KEY" \
+  -d '{"title":"Idempotency proof","description":"same request twice","serviceName":"order-service","severity":"low"}' | json_pp
+# 201, a new incident — note its "id"
+
+curl -i -s -X POST http://localhost:4000/api/incidents \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $IDEMPOTENCY_KEY" \
+  -d '{"title":"Idempotency proof","description":"same request twice","serviceName":"order-service","severity":"low"}' | json_pp
+# still 201, with an "Idempotent-Replayed: true" response header and the
+# SAME "id" as the first call -- check GET /api/incidents afterward and
+# there's only one, not two
+```
+
+Phase 16's rate-limiting proof — send more than `RATE_LIMIT_MAX` (100 by
+default) requests in one `RATE_LIMIT_WINDOW_MS` window and the extra ones
+get `429` (needs the same real Redis):
+
+```bash
+for i in $(seq 1 105); do
+  curl -s -o /dev/null -w "%{http_code}\n" http://localhost:4000/api/services -H "Authorization: Bearer $TOKEN"
+done | sort | uniq -c
+#     100 200
+#       5 429
+```
+
 ## Test
 
 ```bash
 npm test
 ```
 
-Runs twenty-nine suites (176 tests total):
+Runs thirty-seven suites (220 tests total):
 
 - `tests/health.test.ts` (6) — Phase 2, no external services needed.
 - `tests/database.negative.test.ts` (4) — real failed-Mongo-connection proof, no MongoDB needed.
@@ -688,11 +796,64 @@ Runs twenty-nine suites (176 tests total):
   specifically: 403 for USER, 201 for OPERATOR, 201 for ADMIN. **Needs the same
   `mongodb-memory-server` binary download** as every other `*.integration.test.ts` file —
   correctly fails here for the same reason.
+- `tests/retry.unit.test.ts` (6) — Phase 16 — `withRetry()`: first-try success with no wait,
+  retry-then-succeed, never retries the default `isRetryable`, exhausts retries and throws the
+  last error with the right call count, only retries failures `isRetryable` actually approves, and
+  exact exponential-backoff timing (100ms, 200ms, capped at 250ms not 400ms) via fake timers. No
+  I/O needed. Verified in this sandbox.
+- `tests/circuitBreaker.unit.test.ts` (7) — Phase 16 — `CircuitBreaker`'s full state machine: stays
+  CLOSED while succeeding, trips OPEN at exactly `failureThreshold` (not before), a success resets
+  the consecutive-failure streak, OPEN rejects immediately with `CircuitOpenError` without calling
+  the wrapped function at all, the OPEN->HALF_OPEN transition lands exactly at `resetTimeoutMs`, a
+  successful HALF_OPEN probe closes it, and a failed HALF_OPEN probe reopens immediately regardless
+  of `failureThreshold`. Fake timers, no I/O needed. Verified in this sandbox.
+- `tests/aiServiceClient.resilience.unit.test.ts` (10) — Phase 16 — `invokeAgent()`'s actual
+  retry+breaker wiring, distinct from `aiServiceClient.unit.test.ts`'s request-shape coverage:
+  retries once on a connection failure and returns the eventual success; retries once and still
+  fails -> `AiServiceUnavailableError`; a timeout is never retried; a non-2xx response is never
+  retried; 3 consecutive failing calls trip the shared breaker so a 4th call fails immediately with
+  zero fetch attempts; a non-2xx response never counts as a breaker failure. Global `fetch` mocked,
+  module reloaded per test (`vi.resetModules()`) for a fresh breaker instance. No database, no real
+  network. Verified in this sandbox.
+- `tests/rateLimiter.unit.test.ts` (8) — Phase 16 — the pure decision logic in
+  `src/middleware/rateLimiter.ts` with `config/redis` mocked: fails open with Redis disconnected,
+  allows a request under the limit and sets headers, sets `PEXPIRE` only on the first increment of
+  a window (not later ones), rejects with 429 once over `RATE_LIMIT_MAX`, allows a request exactly
+  at the limit, and fails open when either the `INCR` or `PEXPIRE` call itself rejects. No real
+  Redis needed. Verified in this sandbox.
+- `tests/rateLimiter.integration.test.ts` (3) — Phase 16 — the same middleware against a **real
+  local Redis** (logical DB 15, same isolation convention as `redis.integration.test.ts`): allows
+  requests under `RATE_LIMIT_MAX` and blocks the one that exceeds it, tracks separate counters per
+  IP, and sets a real `PEXPIRE`-backed TTL on the window key.
+- `tests/idempotency.unit.test.ts` (9) — Phase 16 — the pure decision logic in
+  `src/middleware/idempotency.ts` with `config/redis` mocked: opt-in (no header, no Redis touched),
+  fails open with Redis disconnected, claims a fresh key and lets the handler run, replays a stored
+  completed response instead of calling `next()`, rejects a concurrent in-progress duplicate and a
+  lost `SET NX` race both with 409, stores the completed response once `res.json()` fires, does NOT
+  cache a 5xx response (releases the lock instead), and fails open when the Redis `GET` call itself
+  rejects. No real Redis needed. Verified in this sandbox.
+- `tests/idempotency.integration.test.ts` (4) — Phase 16 — the real, unmocked proof against `POST
+  /api/incidents`: a retried request with the same `Idempotency-Key` creates exactly one incident
+  and replays the identical response; two different keys create two separate incidents; with no
+  header at all, two identical POSTs create two separate incidents (opt-in only); a validation
+  failure is rejected the same way regardless of the header and never writes an incident. **Needs
+  both**: the same `mongodb-memory-server` binary download as every other `*.integration.test.ts`
+  file, and a real local Redis.
+- `tests/kafka.dlq.integration.test.ts` (1) — Phase 16 — the real, automated failure-injection
+  proof this project's Phase 5 section used to say didn't exist yet: publishes a non-JSON message
+  directly to `diagnostics.ping` via a raw producer (bypassing the validated HTTP endpoint,
+  mirroring the manual `curl`/`kafka-console-producer.sh` instructions above) and asserts it's
+  republished to `diagnostics.ping.dlq` with the exact `originalTopic`/`error`/`originalValue`
+  shape `src/kafka/consumerFactory.ts` writes. **Needs a real Kafka broker** — this sandbox has
+  none (same limitation `kafka.negative.test.ts` documents), so it fails at `beforeAll` with a
+  connection error here, not independently re-verified in this sandbox.
 
-There is deliberately no `kafka.integration.test.ts` in this repository yet
-— see "What could and couldn't be verified here" below for why, and use
-the `curl` sequence above to do that positive-path proof by hand on your
-machine.
+There is no longer a gap here for the Kafka DLQ path specifically — see
+`tests/kafka.dlq.integration.test.ts` above — though it still can't be
+run to green in this sandbox for the same reason `kafka.negative.test.ts`
+can't reach a broker either. Use the `curl` sequence above for a manual
+positive-path proof on your own machine if you want to see it end to end
+against a real broker.
 
 ## Common errors
 
@@ -771,6 +932,22 @@ machine.
   registered (including, if you re-ran `npm run seed`, a stale token from
   before the reseed for one of the 3 demo accounts — those are re-created
   each time, so log in again rather than reusing an old token).
+- `429 {"error":{"message":"Too many requests, please try again later",...}}`
+  on any `/api/*` route — you've hit `RATE_LIMIT_MAX` (100 by default)
+  requests from the same IP within the current `RATE_LIMIT_WINDOW_MS` (60s
+  by default) window; wait for the window to roll over, or raise
+  `RATE_LIMIT_MAX` in `.env` for local testing. This only ever fires when
+  Redis is reachable — if Redis is down, `src/middleware/rateLimiter.ts`
+  fails open instead (see "Design decisions worth knowing").
+- `409 {"error":{"message":"A request with this Idempotency-Key is
+  already being processed",...}}` on `POST /api/incidents` — either a
+  genuinely concurrent duplicate request with the same `Idempotency-Key`
+  is still in flight, or (much more likely while testing by hand) you
+  reused the same key value for what you meant to be a *new*, different
+  incident. Idempotency keys should be unique per logical operation — use
+  a fresh key (e.g. a new UUID) for each new incident you actually want
+  created; the reason to reuse one is only to safely retry the exact same
+  request.
 
 ## What could and couldn't be verified here
 
@@ -924,6 +1101,57 @@ real:**
   of this phase's code changes) confirmed the exact same 7 pre-existing
   `mongodb-memory-server`/local-Redis-dependent suites as the only
   failures, both before and after.
+
+**Phase 16 (reliability patterns) — the two new hand-rolled primitives
+(`withRetry`, `CircuitBreaker`) are fully, genuinely verified here since
+neither has any external dependency at all; everything Redis/Mongo/Kafka
+-backed follows the exact same sandbox limitations every earlier phase
+already hit:**
+
+- **`src/utils/retry.ts` and `src/utils/circuitBreaker.ts` are proven
+  correct in complete isolation** — 13/13 passing
+  (`retry.unit.test.ts` + `circuitBreaker.unit.test.ts`), including exact
+  backoff-timing and state-transition-boundary assertions via fake
+  timers. This isn't a "best effort, blocked by sandbox" case: these two
+  primitives have zero I/O, so there's nothing this sandbox could have
+  prevented from being verified for real.
+- **`aiServiceClient.invokeAgent()`'s actual wiring of both primitives is
+  also fully verified here** — 10/10 passing
+  (`aiServiceClient.resilience.unit.test.ts`), with the global `fetch`
+  mocked (the same boundary-mocking discipline `aiServiceClient.unit.test.ts`
+  already used) and the module reloaded per test so each test gets a
+  fresh breaker instance rather than inheriting state from the last one.
+  Every one of the five behaviors this phase's design promised — retry
+  succeeds, retry exhausts, a timeout is never retried, a non-2xx is
+  never retried, the breaker trips and fails fast — is asserted directly,
+  not inferred.
+- **`rateLimiter.ts`'s and `idempotency.ts`'s pure decision logic is
+  fully verified here too** — 17/17 passing between
+  `rateLimiter.unit.test.ts` and `idempotency.unit.test.ts`, Redis
+  mocked. The **real, unmocked proof of both against a real Redis** (and,
+  for idempotency, a real Mongo too) — `rateLimiter.integration.test.ts`
+  and `idempotency.integration.test.ts` — hits the exact same two
+  independent sandbox limitations every earlier phase already documented:
+  no local Redis reachable (`redis.integration.test.ts`'s own limitation,
+  unchanged since Phase 4) and no outbound access to
+  `fastdl.mongodb.org` for `mongodb-memory-server`'s binary
+  (unchanged since Phase 3). Both fail at `beforeAll` with a connection
+  error here — not independently re-verified in this sandbox, same as
+  every other suite that needs those two dependencies.
+- **`tests/kafka.dlq.integration.test.ts` needs a real Kafka broker**,
+  which this sandbox has never been able to reach (same limitation
+  `kafka.negative.test.ts` documents, unchanged since Phase 5) — it fails
+  at `beforeAll` with a connection error here. This is a genuinely new
+  test closing a genuinely real gap (there was no automated DLQ proof at
+  all before this phase, only the manual `curl`/`kafka-console-producer.sh`
+  instructions above), it just can't be run to green in this particular
+  sandbox — the same honest limitation, not a new one.
+- Every other existing suite was re-run after this phase's changes and
+  showed the identical 10 pre-existing `mongodb-memory-server`/
+  local-Redis/local-Kafka-dependent failures as before (7 carried over
+  from Phase 15, plus these 3 new ones) — 0 unexpected regressions, 0
+  failed assertions anywhere, only connection-level `beforeAll` failures
+  for infrastructure this sandbox doesn't have.
 
 ## Design decisions worth knowing
 
@@ -1251,3 +1479,93 @@ real:**
   a real JWT once auth exists"); Phase 15 changes exactly one line
   (`src/controllers/assistant.controller.ts` passing `req.user?.id`
   through) to make that comment true, rather than a migration.
+- **Every Phase 16 pattern was added because an audit found a genuine
+  gap, not speculatively.** Before writing any new code, every existing
+  timeout/retry/connection path in both services was read directly:
+  Mongo/Redis/Kafka connection timeouts, Redis's own bounded
+  retry-with-backoff, Kafka's idempotent producer and bounded consumer
+  retry, the Kafka DLQ republish path, and the AI service's agent
+  iteration/tool-timeout limits were all already real, so this phase adds
+  nothing there beyond documenting that they're real. What genuinely
+  didn't exist anywhere — retry-with-backoff for any of the three
+  cross-service HTTP clients, a circuit breaker, rate limiting despite
+  its env vars sitting unused since Phase 1, idempotency, and an
+  automated proof of the Kafka DLQ path — is exactly what got built.
+  docs/architecture.md §17 says these patterns should be "added where
+  they solve a concrete, identified failure mode — not speculatively";
+  this audit-first approach is that instruction followed literally, not
+  just cited.
+- **Retry is deliberately narrow: only a connection that was never
+  established at all, never a timeout, never a non-2xx.** Retrying a
+  timeout would double an already-long wait (and, inside the agent loop,
+  compete with `AGENT_TOOL_TIMEOUT_MS`/`AGENT_MAX_ITERATIONS`'s own
+  budget); retrying a non-2xx would resend a request the callee already
+  answered for real — neither is a case where trying again helps. Only
+  "the callee never got to respond at all" (`TypeError` from Node's
+  `fetch`, `httpx.ConnectError` on the Python side) is worth a second
+  attempt, and even then just once, with a short fixed backoff — this is
+  what `RetryOptions.isRetryable`/`RetryOptions.is_retryable` being a
+  required, explicit predicate (not "retry everything by default") is
+  for: a caller has to say exactly which failures qualify.
+- **One circuit breaker per logical downstream dependency, not one per
+  call.** `aiServiceClient.ts`'s `aiServiceBreaker`,
+  `backend_tools_client.py`'s `_backend_breaker`, and `groq_client.py`'s
+  `_groq_breaker` are each a single module-level instance created once
+  and reused — a breaker's entire value is remembering state across
+  calls, so a fresh instance per call would never trip. `backend_client.py`
+  (the barely-used Phase 8 boundary-proof module, distinct from
+  `backend_tools_client.py`) deliberately does **not** get one — it isn't
+  called often enough, or by anything latency-sensitive enough, to meet
+  the same "concrete, identified failure mode" bar the other three do.
+- **Both circuit breakers and the retry helper are hand-implemented, not
+  a new dependency.** Same "hand-roll the core mechanism" choice this
+  project already made for the agent loop, cache-aside, and the Kafka DLQ
+  path — a 3-state state machine and an exponential-backoff loop are both
+  small enough that a library would add a dependency without removing
+  any real complexity, and the TypeScript and Python versions are
+  deliberately near-identical in shape so the design is easy to hold in
+  your head once, in one language, and recognize in the other.
+- **Circuit-breaker/retry thresholds are plain constants, not new env
+  vars.** `RETRY_OPTIONS`, `aiServiceBreaker`'s
+  `failureThreshold`/`resetTimeoutMs`, and their Python-side twins follow
+  the same precedent `REQUEST_TIMEOUT_MS`/`_REQUEST_TIMEOUT_SECONDS`
+  already set throughout this codebase: `docs/env-vars.md` grows when a
+  phase starts reading a genuinely new *configured* value (like
+  `RATE_LIMIT_WINDOW_MS`/`RATE_LIMIT_MAX` finally being read this phase),
+  not for every internal implementation-detail number.
+- **Rate limiting sits ahead of `/api/auth`, not just the authenticated
+  routes.** It has to: protecting `POST /api/auth/login` from
+  credential-stuffing/brute-force is one of the concrete reasons this
+  pattern exists at all, and a route that's unauthenticated by design
+  (you can't require a token to get one) is exactly the one `authenticate`
+  itself can never protect. Keying by IP rather than by authenticated
+  user id is what makes this possible — the limiter has to work before
+  `authenticate` has run.
+- **A fixed window, not a sliding one.** A fixed window can allow up to
+  2x the configured limit in a short burst right at a window boundary,
+  compared to a sliding-window or token-bucket implementation — an
+  accepted, standard trade-off for how much simpler `INCR`+`PEXPIRE` is
+  to reason about and implement correctly, and more than adequate for
+  "protect the API from being hammered," the concrete problem this phase
+  is solving, not a hard per-second SLA.
+- **Idempotency is wired to `POST /api/incidents` only, not to
+  `POST /internal/tools/create-incident`.** The tool-side function's own
+  docstring says plainly that it "is not called by
+  `app/tools/executor.py`'s normal dispatch path" — kept only so a
+  future, explicitly-authorized approval flow has a real function to
+  call. It is genuinely unreachable today; adding idempotency to an
+  unreachable code path would be speculative, the same reasoning this
+  phase applied to every other pattern's scope.
+- **A 5xx response is never cached by the idempotency middleware — it
+  releases the lock instead.** Caching a transient server failure forever
+  would turn "retry after a crash" into "get the same crash back forever
+  until the key's TTL expires," which defeats the point of retrying at
+  all. Only a deterministic outcome — success or a real client-error
+  validation failure — is safe to replay.
+- **Both new middleware fail open, matching `cacheAside.ts`'s existing
+  posture.** An unreachable Redis makes a request unprotected (no rate
+  limit enforced, no idempotency guarantee) rather than broken (a 500 for
+  every request) — Redis degrading availability should degrade a
+  defensive layer, not the whole application, the same "an outage here
+  should make responses slower/less-protected, not broken" reasoning
+  `cacheAside.ts` and `invalidateCache()` already established.

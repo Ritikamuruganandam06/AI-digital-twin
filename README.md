@@ -273,14 +273,53 @@ only the full real-MongoDB round trip
 `backend/README.md`'s Phase 15 section for the exact commands (including
 the RBAC-rejection proof by hand) and full design-decision writeups.
 
-See `docs/phases.md` for what Phase 16 onward will add, and
+**Phase 16 complete:** reliability patterns — `docs/phases.md` row 16's
+"Timeouts, retries, circuit breaker, rate limiting, idempotency, DLQ, AI
+iteration/timeout limits" — added only where an audit found a genuine
+gap, per `docs/architecture.md` §17's own "not speculatively" rule.
+Connection timeouts, Redis's bounded retry-with-backoff, Kafka's
+idempotent producer and DLQ republish path, and the AI service's agent
+iteration/tool-timeout limits were all already real; what was missing —
+retry-with-backoff for cross-service HTTP calls, a circuit breaker, rate
+limiting, idempotency, and an automated DLQ proof — is what this phase
+adds. Two small, dependency-free, hand-implemented primitives
+(`withRetry()` and a 3-state `CircuitBreaker`, `backend/src/utils/`) are
+mirrored line-for-line in Python (`ai-service/app/utils/`) and wired into
+every cross-service HTTP boundary that meets the bar: the backend's call
+to the AI service, the AI service's calls to the backend's tool API, and
+the AI service's calls to Groq — the last of which is the clearest case,
+since `api.groq.com` is confirmed blocked in this very sandbox, making
+the breaker's benefit directly observable rather than hypothetical. On
+the backend, `RATE_LIMIT_WINDOW_MS`/`RATE_LIMIT_MAX` — unused
+`.env.example` entries since Phase 1 — are finally read by a Redis-backed
+fixed-window limiter mounted on `/api/*` ahead of even `/api/auth` (so it
+also guards login/register against brute force), and a new opt-in
+`Idempotency-Key` middleware protects `POST /api/incidents` specifically
+against duplicate submission on retry. Both new middleware fail open if
+Redis is unreachable, the same posture the cache-aside layer already
+established. **One honest note:** the two new primitives themselves need
+no infrastructure at all and are fully, genuinely verified here (13/13
+TypeScript, 13/13 Python, all isolated with fake timers/clocks); their
+wiring into real HTTP clients is verified with the network boundary
+mocked (same discipline every phase has used); the real, unmocked proofs
+against Redis/MongoDB/Kafka (`rateLimiter.integration.test.ts`,
+`idempotency.integration.test.ts`, the new
+`kafka.dlq.integration.test.ts` failure-injection test) hit the exact
+same three independent sandbox limitations every earlier phase already
+documented (no local Redis, no `fastdl.mongodb.org` access, no reachable
+Kafka broker) — not new limitations, the same ones, on new tests. See
+`backend/README.md` and `ai-service/README.md`'s Phase 16 sections for
+the exact commands and full design-decision writeups.
+
+See `docs/phases.md` for what Phase 17 onward will add, and
 `backend/README.md` / `ai-service/README.md` for how to run, seed, and
 verify what exists so far — including exactly which parts of each phase
 could be verified in the sandbox this was built in, and which need your
 own machine (Kafka's broker, MongoDB's live data, a real Groq API key,
 and a real Qdrant instance with normal internet access, in particular —
-Phase 7's engine and most of Phase 15, by contrast, needed no external
-infrastructure at all to verify).
+Phase 7's engine, most of Phase 15, and Phase 16's two new reliability
+primitives, by contrast, needed no external infrastructure at all to
+verify).
 
 ## Local development prerequisites
 

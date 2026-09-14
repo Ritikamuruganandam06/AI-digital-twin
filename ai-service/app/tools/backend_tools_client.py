@@ -16,6 +16,26 @@ backend_client.py rather than a second, near-identical exception type)
 on any network failure or non-2xx response -- app/tools/executor.py is
 what turns that into a result the agent loop can feed back to the LLM
 instead of crashing.
+
+Phase 16 wraps every call in `_request()` with two reliability patterns,
+mirroring backend/src/clients/aiServiceClient.ts's own Phase 16 additions
+on the Node side:
+
+- **Retry with backoff, but only for a connection that was never
+  established at all** (httpx.ConnectError -- DNS failure, connection
+  refused, ...), never for a timeout (a tool call can legitimately take a
+  while; retrying a timeout would just double an already-long wait inside
+  a single agent iteration, competing with AGENT_TOOL_TIMEOUT_MS) and
+  never for a non-2xx response (the backend DID respond). One retry is
+  worth it here specifically: this function is called repeatedly, often
+  several times per agent run, so a single flaky connection shouldn't fail
+  a whole tool call when a brief resend would succeed.
+- **A circuit breaker around the whole retrying call**, shared across
+  every tool invocation (all 18 functions below fan into this one
+  `_request()`), so once the backend has been unreachable for several
+  consecutive tool calls -- within one agent run or across several --
+  later calls fail immediately instead of each paying its own
+  _REQUEST_TIMEOUT_SECONDS wait.
 """
 
 from __future__ import annotations
@@ -26,8 +46,28 @@ import httpx
 
 from app.clients.backend_client import BackendUnavailableError
 from app.config import get_settings
+from app.utils.circuit_breaker import CircuitBreaker, CircuitOpenError
+from app.utils.retry import RetryOptions, with_retry
 
 _REQUEST_TIMEOUT_SECONDS = 10.0
+
+# One retry, a short fixed backoff -- a second consecutive connection
+# failure this close together means the backend process is actually down,
+# not mid-restart, so a third attempt wouldn't help and would only eat
+# into this tool call's share of the agent's own iteration/timeout budget.
+_RETRY_OPTIONS = RetryOptions(retries=1, base_delay_seconds=0.3, is_retryable=lambda exc: isinstance(exc, httpx.ConnectError))
+
+# 3 consecutive failures (across retries -- see _RETRY_OPTIONS) trips the
+# breaker; 30s cooldown before the next probe. Plain constants, not env
+# vars, matching every other timeout/threshold constant already in this
+# module (_REQUEST_TIMEOUT_SECONDS above) and its TypeScript twin
+# (backend/src/clients/aiServiceClient.ts's RETRY_OPTIONS/aiServiceBreaker).
+_backend_breaker = CircuitBreaker(failure_threshold=3, reset_timeout_seconds=30.0)
+
+
+async def _do_request(method: str, url: str, *, params: dict[str, Any] | None, json_body: dict[str, Any] | None) -> httpx.Response:
+    async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT_SECONDS) as client:
+        return await client.request(method, url, params=params, json=json_body)
 
 
 async def _request(method: str, path: str, *, params: dict[str, Any] | None = None, json_body: dict[str, Any] | None = None) -> Any:
@@ -35,12 +75,22 @@ async def _request(method: str, path: str, *, params: dict[str, Any] | None = No
     url = f"{settings.backend_base_url}{path}"
 
     try:
-        async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT_SECONDS) as client:
-            response = await client.request(method, url, params=params, json=json_body)
+        response = await _backend_breaker.execute(
+            lambda: with_retry(lambda: _do_request(method, url, params=params, json_body=json_body), _RETRY_OPTIONS)
+        )
+    except CircuitOpenError as exc:
+        raise BackendUnavailableError(
+            f"Backend circuit breaker is open for {url} (too many recent failures) -- not attempting a network call"
+        ) from exc
     except httpx.RequestError as exc:
         raise BackendUnavailableError(f"Could not reach backend at {url}: {exc}") from exc
 
     if response.status_code >= 400:
+        # A non-2xx response is a real answer from a live process, not a
+        # connectivity problem -- this check runs *after*
+        # _backend_breaker.execute has already recorded the call a
+        # success (the request completed), so it never trips the breaker
+        # or gets retried.
         raise BackendUnavailableError(
             f"Backend returned HTTP {response.status_code} for {method} {url}: {response.text[:300]}"
         )

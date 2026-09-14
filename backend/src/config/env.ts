@@ -38,6 +38,11 @@ export const env = {
   // "local default, production sets it for real" var above.
   jwtSecret: process.env.JWT_SECRET ?? 'change-me-in-local-env',
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '1h',
+  // Phase 16: fixed-window rate limiting (src/middleware/rateLimiter.ts).
+  // RATE_LIMIT_WINDOW_MS/RATE_LIMIT_MAX have been in .env.example since
+  // Phase 1, reserved for this; nothing read them until now.
+  rateLimitWindowMs: Number(process.env.RATE_LIMIT_WINDOW_MS ?? 60_000),
+  rateLimitMax: Number(process.env.RATE_LIMIT_MAX ?? 100),
 } as const;
 
 export const isProduction = env.nodeEnv === 'production';

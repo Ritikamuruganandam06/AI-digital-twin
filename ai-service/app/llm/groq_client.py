@@ -16,6 +16,17 @@ Plain httpx against Groq's OpenAI-compatible REST API, the same style as
 app/clients/backend_client.py, rather than adding the `groq` SDK as a
 dependency for what is currently a single endpoint call (ground rule: no
 unnecessary frameworks/dependencies).
+
+Phase 16 wraps the network call with a retry (connection failures only,
+never a timeout or a non-2xx -- same narrow scope as
+app/tools/backend_tools_client.py's `_request()`) and a circuit breaker.
+Groq is the clearest, most concrete justification of the three Phase 16
+circuit-breaker application points: it is CONFIRMED blocked/unreachable
+in this sandbox (see ai-service/README.md's "What could and couldn't be
+verified here"), so a breaker here directly improves this sandbox's own
+observed behavior -- every agent iteration that calls Groq while it's
+down fails fast instead of each paying its own _REQUEST_TIMEOUT_SECONDS
+wait.
 """
 
 from __future__ import annotations
@@ -25,10 +36,24 @@ from typing import Any
 import httpx
 
 from app.config import get_settings
+from app.utils.circuit_breaker import CircuitBreaker, CircuitOpenError
+from app.utils.retry import RetryOptions, with_retry
 
 _CHAT_COMPLETIONS_URL = "https://api.groq.com/openai/v1/chat/completions"
 _REQUEST_TIMEOUT_SECONDS = 30.0
 _DEFAULT_TEMPERATURE = 0.2
+
+# One retry, a short fixed backoff -- same reasoning as
+# backend_tools_client.py's _RETRY_OPTIONS: a second consecutive
+# connection failure this close together means Groq (or the network path
+# to it) is actually unreachable right now, not a one-off blip.
+_RETRY_OPTIONS = RetryOptions(retries=1, base_delay_seconds=0.3, is_retryable=lambda exc: isinstance(exc, httpx.ConnectError))
+
+# 3 consecutive failures trips the breaker; 30s cooldown before the next
+# probe -- the same thresholds as the other two Phase 16 breakers
+# (backend_tools_client.py, aiServiceClient.ts), for consistency rather
+# than because Groq specifically demands a different number.
+_groq_breaker = CircuitBreaker(failure_threshold=3, reset_timeout_seconds=30.0)
 
 
 class GroqClientError(Exception):
@@ -94,13 +119,25 @@ async def create_chat_completion(
         "Content-Type": "application/json",
     }
 
-    try:
+    async def _do_request() -> httpx.Response:
         async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT_SECONDS) as client:
-            response = await client.post(_CHAT_COMPLETIONS_URL, json=payload, headers=headers)
+            return await client.post(_CHAT_COMPLETIONS_URL, json=payload, headers=headers)
+
+    try:
+        response = await _groq_breaker.execute(lambda: with_retry(_do_request, _RETRY_OPTIONS))
+    except CircuitOpenError as exc:
+        raise GroqClientError(
+            f"Groq circuit breaker is open for {_CHAT_COMPLETIONS_URL} (too many recent failures) -- "
+            "not attempting a network call"
+        ) from exc
     except httpx.RequestError as exc:
         raise GroqClientError(f"Could not reach Groq at {_CHAT_COMPLETIONS_URL}: {exc}") from exc
 
     if response.status_code >= 400:
+        # A non-2xx response is a real answer from Groq, not a
+        # connectivity problem -- this runs after _groq_breaker.execute
+        # has already recorded the call a success, so it's never retried
+        # and never trips the breaker.
         raise GroqClientError(
             f"Groq returned HTTP {response.status_code} for model '{payload['model']}': "
             f"{response.text[:300]}"

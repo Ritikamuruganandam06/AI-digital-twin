@@ -6,7 +6,63 @@ embedding, Qdrant retrieval) — see `../docs/architecture.md` §2, §8, §15.
 Talks to the backend only through its HTTP tool API — never directly to
 MongoDB, Redis, or Kafka.
 
-## Phase 14 status: Agent Execution Trace
+## Phase 16 status: Reliability patterns
+
+Phase 15 (JWT auth + RBAC) was backend-only — nothing in this service
+changed for it, see `backend/README.md`. Phase 16 (docs/phases.md row 16;
+docs/architecture.md §17) is the first phase to touch this service again
+since Phase 14, and — same as the backend side — started with an audit,
+not new code: `app/clients/backend_client.py`'s and
+`app/tools/backend_tools_client.py`'s httpx timeouts
+(`_REQUEST_TIMEOUT_SECONDS`), `app/llm/groq_client.py`'s timeout, and
+`app/config.py`'s `agent_max_iterations`/`agent_tool_timeout_ms` (fully
+wired into `app/agent/loop.py`'s `run_agent()` since Phase 10) were all
+already real. Retry-with-backoff and a circuit breaker were not — this
+phase adds both, as the Python-side mirror of
+`backend/src/utils/retry.ts`/`backend/src/utils/circuitBreaker.ts`:
+
+- `app/utils/retry.py`'s `with_retry()` — same narrow-by-default design
+  as the TypeScript version: a caller passes `is_retryable` to say
+  exactly which failures qualify for a retry; nothing is retried unless
+  explicitly approved. Proven correct in complete isolation
+  (`tests/test_retry.py`, 6 tests, `asyncio.sleep` patched so backoff
+  timing is asserted precisely without actually waiting).
+- `app/utils/circuit_breaker.py`'s `CircuitBreaker` — the same
+  hand-implemented CLOSED→OPEN→HALF_OPEN→CLOSED state machine as the
+  TypeScript version, `time.monotonic()`-based. Proven correct in
+  complete isolation (`tests/test_circuit_breaker.py`, 7 tests,
+  `time.monotonic` patched to a controllable fake clock).
+- Both are wired into `app/tools/backend_tools_client.py`'s `_request()`
+  (the single helper all 18 tool functions funnel through) and
+  `app/llm/groq_client.py`'s `create_chat_completion()` — one retry for a
+  genuine `httpx.ConnectError` only (never a timeout, never a non-2xx: a
+  timeout would double an already-long wait competing with
+  `AGENT_TOOL_TIMEOUT_MS`'s own budget, and a non-2xx means the
+  dependency DID respond), wrapped in a circuit breaker (3 consecutive
+  failures trips it, 30s cooldown). **Groq is the clearest, most concrete
+  justification of the two breaker placements**: it is CONFIRMED
+  blocked/unreachable in this sandbox (see "What could and couldn't be
+  verified here" below), so this breaker directly improves this
+  sandbox's own observed behavior, not a hypothetical one. Each wiring is
+  proven with its own dedicated resilience test file
+  (`tests/test_backend_tools_client_resilience.py`,
+  `tests/test_groq_client_resilience.py`, 6 tests each) — distinct from
+  the existing `test_backend_tools_client.py`/`test_groq_client.py`,
+  which only cover request shape and basic failure normalization, not
+  retry counts or breaker state transitions.
+
+Additive and backward-compatible: every existing test in both files still
+passes unchanged (`test_backend_tools_client.py` 7/7,
+`test_groq_client.py` 11/11) — 106 tests passing total (up from 87),
+same 6 skips as every phase since Phase 13, for the same confirmed
+reasons. See `backend/README.md`'s Phase 16 section for the matching
+Node-side work (`aiServiceClient.ts`'s retry+breaker, rate limiting,
+idempotency, and the new Kafka DLQ failure-injection test) and "Design
+decisions" below for why each threshold is a plain constant, not a new
+env var.
+
+<details>
+<summary>Phase 14 status (agent execution trace persistence) — still accurate, collapsed for length</summary>
 
 This phase's actual persistence work lives in `backend/README.md` (§16's
 `agentexecutions` MongoDB collection, `POST /api/assistant/ask`, `GET
@@ -36,6 +92,8 @@ existing direct `ToolCallStep(...)` construction (including in
 `tests/test_agent_endpoint.py`) still works unchanged — 86 existing tests
 still pass, plus this one new test, 87 total, same 6 skips as Phase 13
 for the same confirmed reasons.
+
+</details>
 
 <details>
 <summary>Phase 13 status (Agent + Tools + RAG orchestration) — still accurate, collapsed for length</summary>
@@ -300,7 +358,7 @@ anywhere else yet — Phase 10 is what wires it into the agent loop against
 
 </details>
 
-## Structure (through Phase 14)
+## Structure (through Phase 16)
 
 ```
 ai-service/
@@ -314,9 +372,12 @@ ai-service/
 │   │   ├── backend_proxy.py GET /api/backend/services (Phase 8's boundary-proof endpoint)
 │   │   └── agent.py         Phase 10 — POST /agent/invoke; Phase 13 adds is_rag_query, Phase 14 adds timestamp per step
 │   ├── clients/
-│   │   └── backend_client.py  the ONLY code that talks to the Node backend directly (Phase 8's boundary proof; NOT a tool)
+│   │   └── backend_client.py  the ONLY code that talks to the Node backend directly (Phase 8's boundary proof; NOT a tool); deliberately NOT given a Phase 16 circuit breaker — too lightly used to meet the bar
 │   ├── llm/
-│   │   └── groq_client.py     the ONLY code that talks to Groq (Phase 9; tools/tool_choice added in Phase 10)
+│   │   └── groq_client.py     the ONLY code that talks to Groq (Phase 9; tools/tool_choice added in Phase 10); Phase 16 — wraps the request in with_retry() + a module-level CircuitBreaker
+│   ├── utils/
+│   │   ├── retry.py            Phase 16 — with_retry(): generic exponential-backoff retry, opt-in is_retryable predicate (Python mirror of backend/src/utils/retry.ts)
+│   │   └── circuit_breaker.py  Phase 16 — CircuitBreaker: hand-implemented CLOSED->OPEN->HALF_OPEN->CLOSED state machine (Python mirror of backend/src/utils/circuitBreaker.ts)
 │   ├── rag/                    wired into the agent loop as of Phase 13, via search_knowledge_base
 │   │   ├── embedding.py        Phase 11 — embed_text()/embed_texts() via fastembed, get_embedding_dimension()
 │   │   ├── qdrant_client.py    Phase 11 — ensure_collection()/upsert_points()/search() against a real Qdrant instance
@@ -326,7 +387,7 @@ ai-service/
 │   │   └── retriever.py        Phase 12 — retrieve(): embed question -> search -> relevance-filter -> chunks; called directly by executor.py as of Phase 13
 │   ├── tools/                  Phase 10; Phase 13 adds search_knowledge_base
 │   │   ├── schemas.py          TOOL_DEFINITIONS / TOOL_SCHEMAS / TOOL_PRIVILEGE (19 tools, 5 privilege tiers)
-│   │   ├── backend_tools_client.py   one async function per backend tool -> backend/src/tools/* route (search_knowledge_base is NOT here -- it never calls the backend)
+│   │   ├── backend_tools_client.py   one async function per backend tool -> backend/src/tools/* route (search_knowledge_base is NOT here -- it never calls the backend); Phase 16 — _request() wraps every call in with_retry() + a shared CircuitBreaker
 │   │   └── executor.py         execute_tool_call() — dispatch + privilege enforcement, never raises; search_knowledge_base calls app/rag/retriever.py directly
 │   └── agent/                  Phase 10; Phase 13 rewrites SYSTEM_PROMPT for tool/RAG decision logic
 │       └── loop.py             run_agent() — the tool-calling loop (iteration cap, per-tool timeout); ToolCallStep.is_rag_query added Phase 13, .timestamp added Phase 14
@@ -349,7 +410,11 @@ ai-service/
 │   ├── test_retriever.py                Phase 12 — score-filtering logic, embedding/Qdrant mocked (always run)
 │   ├── test_rag_live.py                 Phase 12 — THE real "question -> relevant chunks" proof (needs real Qdrant + model download)
 │   ├── test_agent_orchestration.py      Phase 13 — THE test matrix: one test per docs/architecture.md §14 decision-table row, Groq mocked, executor real
-│   └── test_agent_orchestration_live.py Phase 13 — REAL end-to-end: real Groq decides tool vs RAG vs both itself (needs Groq + backend + Qdrant + HF, all four)
+│   ├── test_agent_orchestration_live.py Phase 13 — REAL end-to-end: real Groq decides tool vs RAG vs both itself (needs Groq + backend + Qdrant + HF, all four)
+│   ├── test_retry.py                          Phase 16 — with_retry(), asyncio.sleep patched, no I/O needed
+│   ├── test_circuit_breaker.py                Phase 16 — CircuitBreaker's full state machine, time.monotonic patched, no I/O needed
+│   ├── test_backend_tools_client_resilience.py Phase 16 — _request()'s actual retry+breaker wiring, httpx mocked, module reloaded per test for a fresh breaker
+│   └── test_groq_client_resilience.py          Phase 16 — create_chat_completion()'s actual retry+breaker wiring, httpx mocked, module reloaded per test for a fresh breaker
 ├── requirements.txt
 ├── pytest.ini
 └── .env.example
@@ -556,8 +621,11 @@ source .venv/bin/activate
 pytest -v
 ```
 
-87 tests. Six require real, unmocked network access this build sandbox
-doesn't have and are **automatically skipped** here — 6 skips total, 81
+112 tests (Phase 16 adds 25: 6 in `test_retry.py`, 7 in
+`test_circuit_breaker.py`, 6 in `test_backend_tools_client_resilience.py`,
+6 in `test_groq_client_resilience.py`). Six require real, unmocked
+network access this build sandbox doesn't have and are **automatically
+skipped** here — the same 6 skips as every phase since Phase 13, 106
 passed:
 
 - `test_groq_client_live.py` — real Groq call; skipped, `GROQ_API_KEY` unset.
@@ -582,6 +650,19 @@ passed:
   question, against a really-ingested Qdrant instance and a really-running
   backend; skipped, needs all four of Groq/backend/Qdrant/`huggingface.co`
   reachable at once, none of which this sandbox has.
+
+Phase 16's four new test files need no real infrastructure at all and are
+fully verified here: `test_retry.py` and `test_circuit_breaker.py` test
+the two new primitives in complete isolation (no network, no mocking
+needed — they have no I/O to fake), and
+`test_backend_tools_client_resilience.py`/`test_groq_client_resilience.py`
+prove the actual retry+breaker wiring in `_request()`/
+`create_chat_completion()` with `httpx` mocked (retry-then-succeed,
+retry-then-fail, no-retry-on-timeout, no-retry-on-non-2xx, breaker trips
+and fails fast, a non-2xx never counts as a breaker failure) — the module
+under test is reloaded per test (`importlib.reload`) so each test gets a
+fresh circuit breaker instance rather than inheriting state left behind
+by the previous one.
 
 Everything else — including two fully REAL (not mocked, no network
 needed) proofs against this project's actual `knowledge/` documents,
@@ -674,8 +755,77 @@ What's actually been verified here, versus what needs your machine:
   `test_agent_orchestration_live.py` checks, and it's expected to skip
   here for the same reason. Run it on your machine (with the backend
   seeded and a knowledge base ingested) to get that proof for real.
+- **Phase 16 — `with_retry()` and `CircuitBreaker` are fully verified
+  here, genuinely, not "as much as this sandbox allows."** Both have zero
+  I/O — `test_retry.py` and `test_circuit_breaker.py` (13/13 passing)
+  prove exact backoff timing and state-transition boundaries with a
+  patched clock/sleep, and there was nothing this sandbox's network
+  restrictions could have blocked here even in principle.
+  **`backend_tools_client.py`'s and `groq_client.py`'s actual wiring of
+  both primitives is also fully verified here** — 12/12 passing across
+  the two new resilience test files, `httpx` mocked at the same boundary
+  every other test in this project mocks it at. What is *not* re-verified
+  by these particular tests is the underlying claim that Groq is
+  reachable/unreachable — that's `api.groq.com` being confirmed blocked
+  above, which is exactly the condition this phase's circuit breaker on
+  `groq_client.py` is designed to handle gracefully. If you run this
+  service with normal internet access and a valid `GROQ_API_KEY`, the
+  breaker simply never trips in ordinary operation (every real call
+  succeeds); to see it trip for real, you'd need Groq to actually be
+  down, which `test_groq_client_resilience.py`'s mocked-failure tests
+  already prove correct without needing that coincidence.
 
 ## Design decisions
+
+**Phase 16:**
+
+- **Audit first, code second.** Before writing `retry.py` or
+  `circuit_breaker.py`, every existing timeout/retry path in both
+  services was read directly, not assumed — see `backend/README.md`'s
+  matching Phase 16 design-decisions bullet for the full list of what
+  turned out to already be real. Only genuinely missing patterns got new
+  code, per docs/architecture.md §17's own instruction.
+- **Retry is narrow by construction, not by convention.** `RetryOptions.is_retryable`
+  has no default that retries anything — a caller must explicitly decide
+  which exceptions qualify. `backend_tools_client.py` and `groq_client.py`
+  both pass `lambda exc: isinstance(exc, httpx.ConnectError)`: only "the
+  request never reached the other side at all," never
+  `httpx.TimeoutException` (would double an already-long wait, and inside
+  the agent loop would compete with `AGENT_TOOL_TIMEOUT_MS`'s own budget)
+  and never a non-2xx (the dependency genuinely answered).
+- **One `CircuitBreaker` instance per dependency, module-level, not one
+  per call.** `_backend_breaker` in `backend_tools_client.py` and
+  `_groq_breaker` in `groq_client.py` are each created once and reused —
+  a breaker only works if it remembers state across calls. `backend_client.py`
+  (Phase 8's separate, far-less-used boundary-proof module) deliberately
+  does not get one; it isn't called often enough or by anything
+  latency-sensitive enough to justify it.
+- **Hand-implemented, not a new dependency, and deliberately shaped to
+  match the TypeScript version almost line for line.** Same reasoning
+  this project has used for every other core mechanism (the agent loop
+  itself, the executor's dispatch): a 3-state breaker and a
+  backoff loop are small enough that a library adds a dependency without
+  removing real complexity. Keeping the Python and TypeScript versions
+  structurally identical means understanding one means recognizing the
+  other, which matters for a reliability primitive specifically — the
+  last thing you want during an actual incident is to relearn a
+  differently-shaped implementation on whichever side is failing.
+- **Thresholds are plain module-level constants, not new env vars.**
+  `_RETRY_OPTIONS`, `_backend_breaker`/`_groq_breaker`'s
+  `failure_threshold`/`reset_timeout_seconds` follow the same precedent
+  `_REQUEST_TIMEOUT_SECONDS` already set in both `backend_client.py` and
+  `backend_tools_client.py` — an internal implementation constant, not a
+  configured value a deployment would reasonably need to tune per
+  environment.
+- **Groq gets a circuit breaker specifically because it's the one
+  dependency confirmed unreachable in this very sandbox.** Of the three
+  Phase 16 breaker placements across both services
+  (`aiServiceClient.ts`, `backend_tools_client.py`, `groq_client.py`),
+  this is the one where "a genuinely-down dependency" isn't hypothetical
+  — `api.groq.com` being blocked here (see "What could and couldn't be
+  verified here") is a real, observed condition this breaker directly
+  improves the behavior of, not just a defensive pattern added on
+  general principle.
 
 **Phase 13:**
 
