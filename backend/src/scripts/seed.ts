@@ -3,15 +3,30 @@
  * return the modeled topology"). Run with `npm run seed`.
  *
  * DESTRUCTIVE by design: it fully replaces the contents of the services,
- * servicemetrics, events, and incidents collections in whatever database
- * MONGODB_URI points at (production always reads env, same as
- * connectToDatabase() everywhere else in this codebase — see
+ * servicemetrics, events, incidents, and (Phase 15) users collections in
+ * whatever database MONGODB_URI points at (production always reads env,
+ * same as connectToDatabase() everywhere else in this codebase — see
  * src/config/database.ts) with the fixed demo topology in
- * src/data/seedTopology.ts. Re-running it is safe and idempotent — it
- * always produces the same topology, and the delete-then-insert order
- * means there's never a duplicate. Do not point it at a database whose
- * data you want to keep.
+ * src/data/seedTopology.ts, plus 3 fixed demo accounts (one per role).
+ * Re-running it is safe and idempotent — it always produces the same
+ * topology and the same 3 accounts, and the delete-then-insert order means
+ * there's never a duplicate. Do not point it at a database whose data you
+ * want to keep.
+ *
+ * The 3 demo accounts use a fixed, published, non-secret password
+ * (DEMO_PASSWORD below) purely so this project's own README/manual
+ * verification steps can log in as USER/OPERATOR/ADMIN without inventing
+ * throwaway credentials each time — never a real secret, and never
+ * intended to protect anything. Do not reuse this pattern (or this
+ * password) for a real account.
  */
+const DEMO_PASSWORD = 'DemoPass123!';
+const DEMO_USERS: Array<{ email: string; role: UserRole }> = [
+  { email: 'user@demo.local', role: 'USER' },
+  { email: 'operator@demo.local', role: 'OPERATOR' },
+  { email: 'admin@demo.local', role: 'ADMIN' },
+];
+import bcrypt from 'bcryptjs';
 import { connectToDatabase, disconnectFromDatabase } from '../config/database';
 import { logger } from '../config/logger';
 import { env } from '../config/env';
@@ -21,6 +36,8 @@ import { serviceRepository } from '../repositories/service.repository';
 import { serviceMetricRepository, type CreateServiceMetricInput } from '../repositories/serviceMetric.repository';
 import { eventRepository, type CreateEventInput } from '../repositories/event.repository';
 import { incidentRepository } from '../repositories/incident.repository';
+import { userRepository } from '../repositories/user.repository';
+import type { UserRole } from '../utils/jwt';
 
 const METRIC_SAMPLES_PER_SERVICE = 12;
 const METRIC_SAMPLE_INTERVAL_MINUTES = 5;
@@ -35,12 +52,13 @@ async function seed(): Promise<void> {
   logger.info({ mongodbUri: env.mongodbUri }, 'seed: connecting to MongoDB');
   await connectToDatabase();
 
-  logger.warn('seed: clearing services, servicemetrics, events, incidents collections');
+  logger.warn('seed: clearing services, servicemetrics, events, incidents, users collections');
   await Promise.all([
     serviceRepository.deleteAll(),
     serviceMetricRepository.deleteAll(),
     eventRepository.deleteAll(),
     incidentRepository.deleteAll(),
+    userRepository.deleteAll(),
   ]);
 
   const dependentsByName = computeDependents(SEED_SERVICES);
@@ -116,6 +134,17 @@ async function seed(): Promise<void> {
     source: 'manual',
   });
   logger.info({ incidentId: incident.id }, 'seed: created sample incident');
+
+  for (const demoUser of DEMO_USERS) {
+    // eslint-disable-next-line no-await-in-loop
+    const passwordHash = await bcrypt.hash(DEMO_PASSWORD, 10);
+    // eslint-disable-next-line no-await-in-loop
+    await userRepository.create({ email: demoUser.email, passwordHash, role: demoUser.role });
+  }
+  logger.info(
+    { accounts: DEMO_USERS.map((u) => `${u.email} (${u.role})`), password: `${DEMO_PASSWORD} — fixed, non-secret, dev-only` },
+    'seed: created 3 demo accounts, one per role, for manual USER/OPERATOR/ADMIN verification'
+  );
 
   await disconnectFromDatabase();
   logger.info('seed: done');

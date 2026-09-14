@@ -5,6 +5,7 @@ import { createApp } from '../src/app';
 import { connectToDatabase, disconnectFromDatabase, isDatabaseConnected } from '../src/config/database';
 import { registerHealthCheck, clearHealthChecks } from '../src/health/registry';
 import { checkMongoHealth } from '../src/health/checks/mongodb.check';
+import { authHeader } from './helpers/testAuth';
 
 /**
  * Proves the failure path with a REAL (failing) connection attempt against
@@ -57,11 +58,11 @@ describe('MongoDB connection failure handling', () => {
   it('diagnostic ping endpoints return 503 (not a raw 500) when the database is down', async () => {
     const app = createApp();
 
-    const createRes = await request(app).post('/api/diagnostics/pings').send({ message: 'hello' });
+    const createRes = await request(app).post('/api/diagnostics/pings').set(authHeader()).send({ message: 'hello' });
     expect(createRes.status).toBe(503);
     expect(createRes.body.error.message).toMatch(/database/i);
 
-    const listRes = await request(app).get('/api/diagnostics/pings');
+    const listRes = await request(app).get('/api/diagnostics/pings').set(authHeader());
     expect(listRes.status).toBe(503);
   });
 });

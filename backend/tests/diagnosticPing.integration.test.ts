@@ -6,6 +6,7 @@ import { connectToDatabase, disconnectFromDatabase } from '../src/config/databas
 import { connectToRedis, disconnectFromRedis, getRedisClient } from '../src/config/redis';
 import { env } from '../src/config/env';
 import { DiagnosticPing } from '../src/models/diagnosticPing.model';
+import { authHeader } from './helpers/testAuth';
 
 /**
  * PRODUCTION vs TEST database, kept explicitly separate:
@@ -54,13 +55,16 @@ describe('Diagnostic ping CRUD against a real MongoDB (in-memory) + real Redis c
   it('creates a ping and reads it back via the repository/API path', async () => {
     const app = createApp();
 
-    const createRes = await request(app).post('/api/diagnostics/pings').send({ message: 'phase-3-proof' });
+    const createRes = await request(app)
+      .post('/api/diagnostics/pings')
+      .set(authHeader())
+      .send({ message: 'phase-3-proof' });
 
     expect(createRes.status).toBe(201);
     expect(createRes.body.data.message).toBe('phase-3-proof');
     expect(createRes.body.data.id).toBeTruthy();
 
-    const listRes = await request(app).get('/api/diagnostics/pings');
+    const listRes = await request(app).get('/api/diagnostics/pings').set(authHeader());
 
     expect(listRes.status).toBe(200);
     expect(listRes.body.data).toHaveLength(1);
@@ -71,18 +75,18 @@ describe('Diagnostic ping CRUD against a real MongoDB (in-memory) + real Redis c
   it('cache-aside: second consecutive read is a cache hit, and a write invalidates it', async () => {
     const app = createApp();
 
-    await request(app).post('/api/diagnostics/pings').send({ message: 'cache-me' });
+    await request(app).post('/api/diagnostics/pings').set(authHeader()).send({ message: 'cache-me' });
 
-    const firstRead = await request(app).get('/api/diagnostics/pings');
+    const firstRead = await request(app).get('/api/diagnostics/pings').set(authHeader());
     expect(firstRead.body.cacheHit).toBe(false); // miss: populates the cache
 
-    const secondRead = await request(app).get('/api/diagnostics/pings');
+    const secondRead = await request(app).get('/api/diagnostics/pings').set(authHeader());
     expect(secondRead.body.cacheHit).toBe(true); // hit: served from Redis, not Mongo
     expect(secondRead.body.data).toEqual(firstRead.body.data);
 
-    await request(app).post('/api/diagnostics/pings').send({ message: 'invalidator' });
+    await request(app).post('/api/diagnostics/pings').set(authHeader()).send({ message: 'invalidator' });
 
-    const afterWrite = await request(app).get('/api/diagnostics/pings');
+    const afterWrite = await request(app).get('/api/diagnostics/pings').set(authHeader());
     expect(afterWrite.body.cacheHit).toBe(false); // the write invalidated the cached list
     expect(afterWrite.body.data).toHaveLength(2);
   });
@@ -90,7 +94,7 @@ describe('Diagnostic ping CRUD against a real MongoDB (in-memory) + real Redis c
   it('rejects an empty message with a 400 before touching the database', async () => {
     const app = createApp();
 
-    const res = await request(app).post('/api/diagnostics/pings').send({ message: '   ' });
+    const res = await request(app).post('/api/diagnostics/pings').set(authHeader()).send({ message: '   ' });
 
     expect(res.status).toBe(400);
     const count = await DiagnosticPing.countDocuments();
@@ -102,10 +106,10 @@ describe('Diagnostic ping CRUD against a real MongoDB (in-memory) + real Redis c
 
     for (const message of ['first', 'second', 'third']) {
       // eslint-disable-next-line no-await-in-loop
-      await request(app).post('/api/diagnostics/pings').send({ message });
+      await request(app).post('/api/diagnostics/pings').set(authHeader()).send({ message });
     }
 
-    const res = await request(app).get('/api/diagnostics/pings?limit=2');
+    const res = await request(app).get('/api/diagnostics/pings?limit=2').set(authHeader());
 
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(2);
@@ -127,5 +131,14 @@ describe('Diagnostic ping CRUD against a real MongoDB (in-memory) + real Redis c
 
     expect(result.status).toBe('ok');
     expect(typeof result.latencyMs).toBe('number');
+  });
+
+  it('rejects a request with no Authorization header with 401, before touching the database', async () => {
+    const app = createApp();
+    const res = await request(app).post('/api/diagnostics/pings').send({ message: 'should-not-be-stored' });
+
+    expect(res.status).toBe(401);
+    const count = await DiagnosticPing.countDocuments();
+    expect(count).toBe(0);
   });
 });

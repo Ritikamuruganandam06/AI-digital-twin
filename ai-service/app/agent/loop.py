@@ -11,11 +11,13 @@ separate hardcoded classifier": there is no if/else here routing
 questions to "tools" vs "RAG" -- the same tool-calling loop that has
 handled backend tools since Phase 10 now also offers search_knowledge_base,
 and SYSTEM_PROMPT below is what teaches Groq when each kind is warranted.
-Persisting a full execution trace to MongoDB (§8 step 7, §16) is still
-Phase 14's job -- this loop returns its trace as a plain in-memory list in
-the HTTP response, which is enough to satisfy this phase's own
-verification ("Test matrix of question types produces correct tool/RAG
-usage") without a persistence layer that isn't built yet.
+Persisting a full execution trace to MongoDB (§8 step 7, §16) is the Node
+backend's job (§15: this service has no MongoDB client), done in Phase 14
+by backend/src/services/assistant.service.ts, which calls POST
+/agent/invoke and persists exactly what comes back. §16 asks for steps
+"with timestamps" -- ToolCallStep.timestamp (added this phase) is a real
+capture time set the moment each step is recorded below, not a value the
+backend has to invent afterward.
 
 The loop never lets the LLM's own text stand in for real data (§1: "The
 LLM never invents numbers... every quantitative claim traces back to a
@@ -29,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from app.config import get_settings
@@ -65,12 +68,23 @@ SYSTEM_PROMPT = (
 )
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 @dataclass
 class ToolCallStep:
     tool_name: str
     arguments: dict[str, Any]
     result: dict[str, Any]
     is_rag_query: bool = False
+    # docs/architecture.md §16: persisted steps need "timestamps". Populated
+    # by this default_factory at the moment run_agent() constructs the step
+    # below -- i.e. right after the real tool call returns -- so it's a
+    # genuine capture time, not a value invented later by whoever persists
+    # it (Phase 14's backend service). Direct construction elsewhere (tests)
+    # still works without passing one explicitly.
+    timestamp: str = field(default_factory=_now_iso)
 
 
 @dataclass

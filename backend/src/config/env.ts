@@ -5,8 +5,10 @@ dotenv.config();
 /**
  * Each phase extends this file to read exactly the variables it starts
  * using, rather than validating everything upfront before it's used
- * anywhere. JWT_SECRET / AI_SERVICE_URL still exist only in .env.example,
- * waiting for Phases 8/15.
+ * anywhere. AI_SERVICE_URL was in the same position from Phase 1 until
+ * Phase 14 finally added the code that calls it
+ * (src/clients/aiServiceClient.ts); JWT_SECRET/JWT_EXPIRES_IN were the same
+ * from Phase 1 until Phase 15 added src/utils/jwt.ts.
  */
 export const env = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
@@ -24,6 +26,18 @@ export const env = {
   kafkaBrokers: (process.env.KAFKA_BROKERS ?? 'localhost:9092').split(',').map((b) => b.trim()),
   kafkaClientId: process.env.KAFKA_CLIENT_ID ?? 'ai-digital-twin-backend',
   kafkaConsumerGroup: process.env.KAFKA_CONSUMER_GROUP ?? 'ai-digital-twin-backend-group',
+  // Phase 14: base URL of the Python AI service, used by
+  // src/clients/aiServiceClient.ts. Same local-default convention as
+  // every other *Uri/*Url above.
+  aiServiceUrl: process.env.AI_SERVICE_URL ?? 'http://localhost:8000',
+  // Phase 15: JWT signing secret + access-token lifetime, used by
+  // src/utils/jwt.ts. The fallback below is the same local-dev placeholder
+  // documented in .env.example ("change-me-in-local-env") — never a real
+  // secret, and never what a deployed environment should actually use;
+  // production is expected to set a real JWT_SECRET, same as every other
+  // "local default, production sets it for real" var above.
+  jwtSecret: process.env.JWT_SECRET ?? 'change-me-in-local-env',
+  jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '1h',
 } as const;
 
 export const isProduction = env.nodeEnv === 'production';

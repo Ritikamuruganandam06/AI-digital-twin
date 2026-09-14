@@ -4,6 +4,7 @@ import { createApp } from '../src/app';
 import { connectKafkaProducer, disconnectKafkaProducer, isKafkaProducerConnected } from '../src/config/kafka';
 import { registerHealthCheck, clearHealthChecks } from '../src/health/registry';
 import { checkKafkaHealth } from '../src/health/checks/kafka.check';
+import { authHeader } from './helpers/testAuth';
 
 /**
  * Proves the failure path with a REAL (failing) connection attempt against
@@ -49,7 +50,7 @@ describe('Kafka connection failure handling', () => {
   it('POST /api/diagnostics/kafka-messages returns 503 (not a raw 500) when Kafka is down', async () => {
     const app = createApp();
 
-    const res = await request(app).post('/api/diagnostics/kafka-messages').send({ message: 'hello' });
+    const res = await request(app).post('/api/diagnostics/kafka-messages').set(authHeader()).send({ message: 'hello' });
 
     expect(res.status).toBe(503);
     expect(res.body.error.message).toMatch(/kafka/i);
@@ -58,7 +59,7 @@ describe('Kafka connection failure handling', () => {
   it('GET /api/diagnostics/kafka-messages still works (reads the in-memory store) when Kafka is down', async () => {
     const app = createApp();
 
-    const res = await request(app).get('/api/diagnostics/kafka-messages');
+    const res = await request(app).get('/api/diagnostics/kafka-messages').set(authHeader());
 
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.data)).toBe(true);

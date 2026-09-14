@@ -10,6 +10,7 @@ import { Service } from '../src/models/service.model';
 import { ServiceMetric } from '../src/models/serviceMetric.model';
 import { Event } from '../src/models/event.model';
 import { Incident } from '../src/models/incident.model';
+import { authHeader } from './helpers/testAuth';
 
 /**
  * Phase 6's real MongoDB proof, same PRODUCTION-vs-TEST database split as
@@ -77,7 +78,7 @@ describe('Digital twin query endpoints against a real MongoDB (in-memory)', () =
     await seedTinyTopology();
     const app = createApp();
 
-    const res = await request(app).get('/api/services');
+    const res = await request(app).get('/api/services').set(authHeader());
 
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(2);
@@ -88,13 +89,13 @@ describe('Digital twin query endpoints against a real MongoDB (in-memory)', () =
     await seedTinyTopology();
     const app = createApp();
 
-    const authRes = await request(app).get('/api/services/auth-service');
+    const authRes = await request(app).get('/api/services/auth-service').set(authHeader());
     expect(authRes.status).toBe(200);
     expect(authRes.body.data.resolvedDependencies).toEqual([]);
     expect(authRes.body.data.resolvedDependents).toHaveLength(1);
     expect(authRes.body.data.resolvedDependents[0].name).toBe('billing-service');
 
-    const billingRes = await request(app).get('/api/services/billing-service');
+    const billingRes = await request(app).get('/api/services/billing-service').set(authHeader());
     expect(billingRes.status).toBe(200);
     expect(billingRes.body.data.resolvedDependents).toEqual([]);
     expect(billingRes.body.data.resolvedDependencies).toHaveLength(1);
@@ -103,7 +104,7 @@ describe('Digital twin query endpoints against a real MongoDB (in-memory)', () =
 
   it('GET /api/services/:name returns 404 for an unknown service', async () => {
     const app = createApp();
-    const res = await request(app).get('/api/services/does-not-exist');
+    const res = await request(app).get('/api/services/does-not-exist').set(authHeader());
     expect(res.status).toBe(404);
   });
 
@@ -135,47 +136,72 @@ describe('Digital twin query endpoints against a real MongoDB (in-memory)', () =
     ]);
     const app = createApp();
 
-    const res = await request(app).get('/api/services/auth-service/metrics');
+    const res = await request(app).get('/api/services/auth-service/metrics').set(authHeader());
 
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(2);
     expect(res.body.data[0].trafficRps).toBe(6); // newest first
   });
 
-  it('POST /api/incidents creates an incident tied to a real service, then GET retrieves it', async () => {
+  it('POST /api/incidents creates an incident tied to a real service, then GET retrieves it (OPERATOR role required)', async () => {
     await seedTinyTopology();
     const app = createApp();
 
-    const createRes = await request(app).post('/api/incidents').send({
-      title: 'Billing errors spiking',
-      description: 'billing-service 5xx rate jumped after a deploy.',
-      serviceName: 'billing-service',
-      affectedServiceNames: ['auth-service'],
-      severity: 'high',
-    });
+    const createRes = await request(app)
+      .post('/api/incidents')
+      .set(authHeader('OPERATOR'))
+      .send({
+        title: 'Billing errors spiking',
+        description: 'billing-service 5xx rate jumped after a deploy.',
+        serviceName: 'billing-service',
+        affectedServiceNames: ['auth-service'],
+        severity: 'high',
+      });
 
     expect(createRes.status).toBe(201);
     expect(createRes.body.data.status).toBe('open');
     expect(createRes.body.data.source).toBe('manual');
 
-    const getRes = await request(app).get(`/api/incidents/${createRes.body.data.id}`);
+    const getRes = await request(app).get(`/api/incidents/${createRes.body.data.id}`).set(authHeader());
     expect(getRes.status).toBe(200);
     expect(getRes.body.data.title).toBe('Billing errors spiking');
 
-    const listRes = await request(app).get('/api/incidents');
+    const listRes = await request(app).get('/api/incidents').set(authHeader());
     expect(listRes.body.data).toHaveLength(1);
+  });
+
+  it('POST /api/incidents rejects a plain USER role with 403, writing nothing', async () => {
+    await seedTinyTopology();
+    const app = createApp();
+
+    const res = await request(app)
+      .post('/api/incidents')
+      .set(authHeader('USER'))
+      .send({
+        title: 'Billing errors spiking',
+        description: 'billing-service 5xx rate jumped after a deploy.',
+        serviceName: 'billing-service',
+        severity: 'high',
+      });
+
+    expect(res.status).toBe(403);
+    const count = await Incident.countDocuments();
+    expect(count).toBe(0);
   });
 
   it('POST /api/incidents rejects an unknown serviceName with a 400 before writing anything', async () => {
     await seedTinyTopology();
     const app = createApp();
 
-    const res = await request(app).post('/api/incidents').send({
-      title: 'x',
-      description: 'y',
-      serviceName: 'does-not-exist',
-      severity: 'low',
-    });
+    const res = await request(app)
+      .post('/api/incidents')
+      .set(authHeader('OPERATOR'))
+      .send({
+        title: 'x',
+        description: 'y',
+        serviceName: 'does-not-exist',
+        severity: 'low',
+      });
 
     expect(res.status).toBe(400);
     const count = await Incident.countDocuments();
@@ -186,10 +212,10 @@ describe('Digital twin query endpoints against a real MongoDB (in-memory)', () =
     await seedTinyTopology();
     const app = createApp();
 
-    const badRes = await request(app).get('/api/events?service=does-not-exist');
+    const badRes = await request(app).get('/api/events?service=does-not-exist').set(authHeader());
     expect(badRes.status).toBe(404);
 
-    const goodRes = await request(app).get('/api/events?service=auth-service');
+    const goodRes = await request(app).get('/api/events?service=auth-service').set(authHeader());
     expect(goodRes.status).toBe(200);
     expect(goodRes.body.data).toEqual([]);
   });

@@ -1,14 +1,15 @@
 """
 POST /agent/invoke -- the endpoint docs/architecture.md §3's sequence
 diagram shows the Node backend calling ("BE->>AI: POST /agent/invoke
-(question, context)"). Phase 10 exposes it directly for the AI service's
-own verification (curl/tests); wiring the Node backend to actually call
-it is a later-phase integration (the backend has no code that calls out
-to the AI service yet -- AI_SERVICE_URL has sat unused in backend/.env
-since Phase 1). Phase 13 adds `is_rag_query` to each step in the response
-so a caller can see, per step, whether the agent used a live/simulation
-tool or a knowledge-base search -- without this needing a persisted
-execution trace, which is still Phase 14's job.
+(question, context)"). Phase 10 exposed it directly for the AI service's
+own verification (curl/tests); Phase 14 is the phase that finally wires
+the Node backend to actually call it, from
+backend/src/services/assistant.service.ts, and persist exactly what
+comes back as an agent execution trace (AI_SERVICE_URL had sat unused in
+backend/.env since Phase 1 until then). Phase 13 added `is_rag_query` to
+each step; Phase 14 adds `timestamp` -- both exist specifically so the
+backend's persisted trace doesn't have to invent or re-derive either
+value itself.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ class ToolCallStepResponse(BaseModel):
     arguments: dict
     result: dict
     is_rag_query: bool = False
+    timestamp: str
 
 
 class AgentInvokeResponse(BaseModel):
@@ -51,7 +53,11 @@ async def invoke_agent(payload: AgentInvokeRequest) -> AgentInvokeResponse:
         answer=result.answer,
         steps=[
             ToolCallStepResponse(
-                tool_name=s.tool_name, arguments=s.arguments, result=s.result, is_rag_query=s.is_rag_query
+                tool_name=s.tool_name,
+                arguments=s.arguments,
+                result=s.result,
+                is_rag_query=s.is_rag_query,
+                timestamp=s.timestamp,
             )
             for s in result.steps
         ],

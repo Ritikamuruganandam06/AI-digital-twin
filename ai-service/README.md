@@ -6,7 +6,39 @@ embedding, Qdrant retrieval) — see `../docs/architecture.md` §2, §8, §15.
 Talks to the backend only through its HTTP tool API — never directly to
 MongoDB, Redis, or Kafka.
 
-## Phase 13 status: Agent + Tools + RAG orchestration
+## Phase 14 status: Agent Execution Trace
+
+This phase's actual persistence work lives in `backend/README.md` (§16's
+`agentexecutions` MongoDB collection, `POST /api/assistant/ask`, `GET
+/api/executions[/:id]`) — per `docs/architecture.md` §15, this service
+has no MongoDB client and never will. What changed here is small but
+required: `docs/architecture.md` §16 asks for persisted steps "with
+timestamps," and Phase 13's `ToolCallStep` didn't have one.
+
+- `app/agent/loop.py`'s `ToolCallStep` gained a `timestamp: str` field,
+  populated by a `default_factory` that captures
+  `datetime.now(timezone.utc).isoformat()` at the exact moment each step
+  is constructed — i.e. right after that step's real tool call returns.
+  This is a genuine per-step capture time, not a value invented later by
+  whichever backend endpoint eventually persists it.
+- `app/api/agent.py`'s `ToolCallStepResponse` now includes `timestamp`, so
+  it's part of `POST /agent/invoke`'s response body, not just an internal
+  field.
+- `tests/test_agent_loop.py::test_each_step_gets_a_real_timestamp_in_call_order`
+  proves both properties that matter: every step's timestamp parses as a
+  real ISO 8601 datetime, and across a multi-step run, timestamps are
+  non-decreasing in the same order the steps actually ran in — Groq and
+  the executor both mocked (same discipline as every other test in that
+  file), but the timestamp capture itself is real code, not mocked.
+
+Additive and backward-compatible: `timestamp` has a default, so every
+existing direct `ToolCallStep(...)` construction (including in
+`tests/test_agent_endpoint.py`) still works unchanged — 86 existing tests
+still pass, plus this one new test, 87 total, same 6 skips as Phase 13
+for the same confirmed reasons.
+
+<details>
+<summary>Phase 13 status (Agent + Tools + RAG orchestration) — still accurate, collapsed for length</summary>
 
 Implemented now, on top of Phase 10's tool-calling loop and Phase 12's
 retriever — this is the phase that finally connects them:
@@ -88,11 +120,14 @@ make this call.
 
 Deliberately **not** in this phase: persisting the execution trace to
 MongoDB (`docs/architecture.md` §16, `agentexecutions` collection) — that
-stays Phase 14's job; `is_rag_query` is returned in the HTTP response
-precisely so a future Phase 14 trace-writer has it without recomputing
-anything. No changes to `docs/architecture.md` were needed — §14's
-decision table and "via the tool-calling interface" description already
-specified exactly this design when it was written in Phase 1.
+was Phase 14's job (done in `backend/`, see this file's Phase 14 section
+above); `is_rag_query` is returned in the HTTP response precisely so
+Phase 14's trace-writer has it without recomputing anything. No changes
+to `docs/architecture.md` were needed — §14's decision table and "via the
+tool-calling interface" description already specified exactly this
+design when it was written in Phase 1.
+
+</details>
 
 <details>
 <summary>Phase 12 status (RAG ingestion and retrieval) — still accurate, collapsed for length</summary>
@@ -265,7 +300,7 @@ anywhere else yet — Phase 10 is what wires it into the agent loop against
 
 </details>
 
-## Structure (through Phase 13)
+## Structure (through Phase 14)
 
 ```
 ai-service/
@@ -277,7 +312,7 @@ ai-service/
 │   ├── api/
 │   │   ├── health.py        GET /health
 │   │   ├── backend_proxy.py GET /api/backend/services (Phase 8's boundary-proof endpoint)
-│   │   └── agent.py         Phase 10 — POST /agent/invoke; Phase 13 adds is_rag_query per step
+│   │   └── agent.py         Phase 10 — POST /agent/invoke; Phase 13 adds is_rag_query, Phase 14 adds timestamp per step
 │   ├── clients/
 │   │   └── backend_client.py  the ONLY code that talks to the Node backend directly (Phase 8's boundary proof; NOT a tool)
 │   ├── llm/
@@ -294,7 +329,7 @@ ai-service/
 │   │   ├── backend_tools_client.py   one async function per backend tool -> backend/src/tools/* route (search_knowledge_base is NOT here -- it never calls the backend)
 │   │   └── executor.py         execute_tool_call() — dispatch + privilege enforcement, never raises; search_knowledge_base calls app/rag/retriever.py directly
 │   └── agent/                  Phase 10; Phase 13 rewrites SYSTEM_PROMPT for tool/RAG decision logic
-│       └── loop.py             run_agent() — the tool-calling loop (iteration cap, per-tool timeout); ToolCallStep.is_rag_query added Phase 13
+│       └── loop.py             run_agent() — the tool-calling loop (iteration cap, per-tool timeout); ToolCallStep.is_rag_query added Phase 13, .timestamp added Phase 14
 ├── tests/
 │   ├── test_health.py
 │   ├── test_backend_client.py           unit tests, httpx mocked
@@ -303,7 +338,7 @@ ai-service/
 │   ├── test_groq_client_live.py         REAL Groq call — skipped unless GROQ_API_KEY is set
 │   ├── test_backend_tools_client.py     Phase 10 — unit tests, httpx mocked
 │   ├── test_executor.py                 Phase 10 — dispatch + privilege-enforcement; Phase 13 adds search_knowledge_base dispatch + error-handling tests
-│   ├── test_agent_loop.py               Phase 10 — control-flow tests, Groq + executor both mocked
+│   ├── test_agent_loop.py               Phase 10 — control-flow tests, Groq + executor both mocked; Phase 14 adds the real per-step timestamp test
 │   ├── test_agent_endpoint.py           Phase 10 — HTTP layer only, run_agent mocked
 │   ├── test_agent_live.py               Phase 10 — REAL end-to-end: real Groq + real backend, both required
 │   ├── test_embedding.py                Phase 11 — mostly mocked (always run) + one REAL, unmocked semantic-similarity proof
@@ -521,8 +556,8 @@ source .venv/bin/activate
 pytest -v
 ```
 
-86 tests. Six require real, unmocked network access this build sandbox
-doesn't have and are **automatically skipped** here — 6 skips total, 80
+87 tests. Six require real, unmocked network access this build sandbox
+doesn't have and are **automatically skipped** here — 6 skips total, 81
 passed:
 
 - `test_groq_client_live.py` — real Groq call; skipped, `GROQ_API_KEY` unset.

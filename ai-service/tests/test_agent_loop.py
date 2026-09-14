@@ -8,6 +8,7 @@ verification's job respectively).
 
 from __future__ import annotations
 
+from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -148,3 +149,28 @@ async def test_malformed_tool_arguments_are_handled_without_crashing() -> None:
     assert len(result.steps) == 1
     assert "error" in result.steps[0].result
     assert result.answer == "Couldn't parse that, but here's what I know anyway."
+
+
+@pytest.mark.asyncio
+async def test_each_step_gets_a_real_timestamp_in_call_order() -> None:
+    """
+    docs/architecture.md §16: persisted steps need "timestamps". Phase 14
+    proof that ToolCallStep.timestamp is a genuine per-step capture time
+    (parseable, monotonically non-decreasing across steps in one run) --
+    not a placeholder the backend has to invent when it persists this.
+    """
+    responses = [
+        _tool_call_completion("get_services", "{}", call_id="call_1"),
+        _tool_call_completion("search_knowledge_base", '{"query": "recovery"}', call_id="call_2"),
+        _final_answer_completion("Done."),
+    ]
+
+    with (
+        patch("app.agent.loop.create_chat_completion", new=AsyncMock(side_effect=responses)),
+        patch("app.agent.loop.execute_tool_call", new=AsyncMock(return_value={"result": []})),
+    ):
+        result = await run_agent("List services, then check the runbook.")
+
+    assert len(result.steps) == 2
+    timestamps = [datetime.fromisoformat(step.timestamp) for step in result.steps]
+    assert timestamps[0] <= timestamps[1], "steps should be timestamped in the order they actually ran"

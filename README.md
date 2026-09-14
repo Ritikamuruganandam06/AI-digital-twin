@@ -212,14 +212,75 @@ passed, 6 skipped, all for confirmed reasons, no failures. See
 `ai-service/README.md`'s Phase 13 section for the exact commands and full
 design-decision writeups.
 
-See `docs/phases.md` for what Phase 14 onward will add, and
+**Phase 14 complete:** every agent invocation is now a persisted record,
+retrievable via API — `docs/phases.md` row 14's "Agent Execution Trace."
+This is the first backend work since Phase 10, and the first code
+anywhere in this project that calls *from* the backend *to* the AI
+service: `backend/src/clients/aiServiceClient.ts` (`AI_SERVICE_URL` had
+sat unused in `.env` since Phase 1) is the mirror image of Phase 8's
+`backend_client.py`, calling a real `POST /agent/invoke`. The new `POST
+/api/assistant/ask` is `docs/architecture.md` §3's sequence diagram made
+real: it calls the AI service, maps its response onto a new
+`agentexecutions` MongoDB collection (`status` derived from
+`stopped_reason` — completed/incomplete/error — and `retrievedDocuments`
+denormalized out of any RAG steps), and persists it; `GET
+/api/executions` and `GET /api/executions/:id` are the "retrievable via
+API" half. On the AI-service side, Phase 13's `ToolCallStep` gained a
+real per-step `timestamp`, captured the moment each tool call completes,
+so the backend's trace never has to invent timing data.  **One honest
+caveat, in three parts:** the pure transformation logic (status mapping,
+RAG-result extraction, timestamp parsing, HTTP-layer validation) is fully
+verified here for real — 27/27 passing, no database needed; the real
+MongoDB persist-then-read-back round trip needs the same
+`mongodb-memory-server` binary download blocked in this sandbox since
+Phase 3; and the fully-live version (real MongoDB + a real running AI
+service, no mocking at all) needs both running together, which this
+sandbox has neither of — notably, it does *not* additionally need a real
+`GROQ_API_KEY`, since even a real `groq_error` execution is a real,
+correctly-persistable trace. See `backend/README.md`'s Phase 14 section
+for the exact commands and full design-decision writeups.
+
+**Phase 15 complete:** the platform now has real authentication and
+authorization — `docs/phases.md` row 15's "JWT, RBAC
+(USER/OPERATOR/ADMIN)." A new `users` collection
+(`backend/src/models/user.model.ts`) backs `POST /api/auth/register` and
+`POST /api/auth/login` (`backend/src/services/auth.service.ts`): real
+bcrypt password hashing (never stores plaintext), real JWT issuance
+(`backend/src/utils/jwt.ts`) carrying the user's id/email/role. Every
+other `/api/*` route is now wired explicitly, per route, behind a new
+`authenticate` middleware in `backend/src/app.ts` — stateless (no
+database lookup per request, just signature + expiry verification) — and
+`POST /api/incidents` additionally requires `authorize('OPERATOR')`, a
+rank-based check (`USER < OPERATOR < ADMIN`) that a plain `USER` token
+now genuinely gets rejected by with a real `403`, not just a documented
+intent. `POST /api/assistant/ask` finally populates
+`agentexecutions.userId` (left optional since Phase 14, explicitly
+waiting on this phase) from the real authenticated caller.
+`/api/auth/*` itself stays unauthenticated (you can't need a token to get
+one), and `/internal/tools/*` deliberately stays outside this middleware
+too — it's a separate service-to-service trust boundary between the AI
+service and the backend (`docs/architecture.md` §15), not user-facing
+RBAC. `npm run seed` now also creates 3 fixed demo accounts, one per
+role, so USER/OPERATOR/ADMIN behavior can be exercised by hand. **One
+honest note, not really a caveat this time:** unlike every prior phase,
+this one needed almost no external infrastructure to verify for real —
+bcrypt and JWT are pure libraries, not services to reach over a network —
+so 26 of this phase's tests pass in this sandbox with no database at all;
+only the full real-MongoDB round trip
+(`backend/tests/auth.integration.test.ts`) hits the same
+`mongodb-memory-server` binary-download block every other
+`*.integration.test.ts` file in this repo has hit since Phase 3. See
+`backend/README.md`'s Phase 15 section for the exact commands (including
+the RBAC-rejection proof by hand) and full design-decision writeups.
+
+See `docs/phases.md` for what Phase 16 onward will add, and
 `backend/README.md` / `ai-service/README.md` for how to run, seed, and
 verify what exists so far — including exactly which parts of each phase
 could be verified in the sandbox this was built in, and which need your
 own machine (Kafka's broker, MongoDB's live data, a real Groq API key,
 and a real Qdrant instance with normal internet access, in particular —
-Phase 7's engine, by contrast, needed no external infrastructure at all
-to verify).
+Phase 7's engine and most of Phase 15, by contrast, needed no external
+infrastructure at all to verify).
 
 ## Local development prerequisites
 
