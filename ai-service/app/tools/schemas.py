@@ -1,6 +1,8 @@
 """
 Tool schemas offered to Groq's chat-completions API (docs/phases.md row
-10: "Tool schemas + tool execution loop against backend tool API").
+10: "Tool schemas + tool execution loop against backend tool API"; row 13
+adds search_knowledge_base, the RAG side of "Agent + Tools + RAG
+orchestration").
 
 Each entry is Groq/OpenAI's function-calling shape:
 `{"type": "function", "function": {"name", "description", "parameters"}}`.
@@ -10,11 +12,21 @@ backend_tools_client.py's Python function names and tools.route.ts's URL
 paths (both of which use different naming conventions); only the tool
 `name` string has to match across all three.
 
-Grouped into the same three privilege tiers docs/architecture.md §10
-defines, each tagged with a PrivilegeTier so executor.py can enforce the
-"privileged actions require explicit approval" rule structurally rather
-than by convention. This is the fixed tool set the agent is offered --
-"the grouping is enforced, not just documented" (§10).
+Grouped into privilege tiers, each tagged with a PrivilegeTier so
+executor.py can enforce rules structurally rather than by convention.
+docs/architecture.md §10 defines three tiers for tools that reach the
+backend's tool API (read-only, simulation, privileged); KNOWLEDGE_RETRIEVAL
+is a fourth tier added in Phase 13 for search_knowledge_base, which is
+deliberately NOT a backend tool at all -- it never crosses the AI
+service/backend boundary (§15: "the AI service has no MongoDB/Redis/Kafka
+client"). It calls app/rag/retriever.py directly, the AI service's own
+Qdrant-backed knowledge store (§2, §13). Per docs/architecture.md §14,
+"This decision is made by the LLM itself via the tool-calling interface
+... rather than a separate hardcoded classifier" -- search_knowledge_base
+being just another tool in this same list, with its use governed by
+app/agent/loop.py's system prompt, IS that decision logic. This is the
+fixed tool set the agent is offered -- "the grouping is enforced, not
+just documented" (§10).
 """
 
 from __future__ import annotations
@@ -25,6 +37,7 @@ from enum import Enum
 class PrivilegeTier(str, Enum):
     READ_ONLY = "read_only"
     SIMULATION = "simulation"
+    KNOWLEDGE_RETRIEVAL = "knowledge_retrieval"  # RAG search -- safe, read-only, never touches the backend
     PRIVILEGED_SAFE = "privileged_safe"  # returns a recommendation, never mutates
     PRIVILEGED_MUTATING = "privileged_mutating"  # mutates real state -- requires approval
 
@@ -277,6 +290,41 @@ TOOL_DEFINITIONS: list[tuple[PrivilegeTier, dict]] = [
                 "name": "find_bottleneck",
                 "description": "Rank every service by how many other services would be affected if it failed right now, given current real health.",
                 "parameters": {"type": "object", "properties": {}},
+            },
+        },
+    ),
+    # ---- Knowledge retrieval (RAG, Phase 13) --------------------------
+    (
+        PrivilegeTier.KNOWLEDGE_RETRIEVAL,
+        {
+            "type": "function",
+            "function": {
+                "name": "search_knowledge_base",
+                "description": (
+                    "Search runbooks, architecture docs, and incident reports for documented "
+                    "operational guidance -- recovery procedures, troubleshooting steps, and "
+                    "past-incident writeups. Use this for questions like 'what is the recovery "
+                    "procedure for...', 'what should I check if...', or 'how do I troubleshoot...' "
+                    "that need documented guidance rather than live system data. This never "
+                    "returns live metrics, health, or topology -- use a get_*/simulate_* tool for "
+                    "that instead. Returns an empty result list (not an error) when nothing in the "
+                    "knowledge base is relevant enough to the query."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The question or topic to search the knowledge base for.",
+                        },
+                        "topK": {
+                            "type": "integer",
+                            "description": "Max chunks to return (default 5).",
+                            "default": 5,
+                        },
+                    },
+                    "required": ["query"],
+                },
             },
         },
     ),

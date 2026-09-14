@@ -4,9 +4,15 @@ AI service entrypoint.
 Phase 8: service skeleton, its own health endpoint, and an HTTP boundary
 to the Node backend. Phase 9: a Groq chat-completion client (not wired to
 any endpoint on its own). Phase 10: tool schemas + a tool execution loop
-against the backend's tool API, exposed here as POST /agent/invoke. No
-RAG, no Qdrant client, and no MongoDB/Redis/Kafka client anywhere in this
-service -- those are Phases 11-14 (docs/architecture.md §2, §15).
+against the backend's tool API, exposed here as POST /agent/invoke.
+Phase 11: an embedding pipeline + Qdrant client (not wired to the agent
+loop yet). Phase 12: a chunking/ingestion pipeline + retriever over a
+real knowledge/ base (still not wired to the agent loop). Phase 13: the
+agent loop now offers search_knowledge_base alongside every backend tool,
+so POST /agent/invoke can use tools, RAG, both, or neither per question --
+still no MongoDB/Redis/Kafka client anywhere in this service; RAG goes
+through app/rag/ (its own Qdrant client), never through the backend
+(docs/architecture.md §2, §15).
 """
 
 from __future__ import annotations

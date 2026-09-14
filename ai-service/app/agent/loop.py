@@ -1,18 +1,27 @@
 """
 The agent orchestration loop (docs/phases.md row 10: "tool execution loop
-against backend tool API"; docs/architecture.md §8 steps 1-3, 5-6).
+against backend tool API"; row 13: "Full decision logic (tools/RAG/both/
+neither)"; docs/architecture.md §8, §14).
 
-RAG (§8 step 4) is not part of this phase (Phases 11-12), and persisting
-a full execution trace to MongoDB (§8 step 7, §16) is Phase 14's job --
-this loop returns its trace as a plain in-memory list in the HTTP
-response instead, which is enough to satisfy this phase's own
-verification ("LLM calls a tool, tool hits real backend data, result
-returned") without a persistence layer that isn't built yet.
+RAG (§8 step 4) is now wired in as of Phase 13 -- not as a second,
+separately-invoked code path, but as one more entry in TOOL_SCHEMAS
+(search_knowledge_base, app/tools/schemas.py). Per §14, "This decision is
+made by the LLM itself via the tool-calling interface ... rather than a
+separate hardcoded classifier": there is no if/else here routing
+questions to "tools" vs "RAG" -- the same tool-calling loop that has
+handled backend tools since Phase 10 now also offers search_knowledge_base,
+and SYSTEM_PROMPT below is what teaches Groq when each kind is warranted.
+Persisting a full execution trace to MongoDB (§8 step 7, §16) is still
+Phase 14's job -- this loop returns its trace as a plain in-memory list in
+the HTTP response, which is enough to satisfy this phase's own
+verification ("Test matrix of question types produces correct tool/RAG
+usage") without a persistence layer that isn't built yet.
 
 The loop never lets the LLM's own text stand in for real data (§1: "The
 LLM never invents numbers... every quantitative claim traces back to a
-tool call") -- it only ever sends the LLM tool results that actually came
-back from app/tools/executor.py, which only ever calls the real backend.
+tool call") -- it only ever sends the LLM tool/RAG results that actually
+came back from app/tools/executor.py, which only ever calls the real
+backend or the real (Phase 11/12) embedding+Qdrant pipeline.
 """
 
 from __future__ import annotations
@@ -24,18 +33,35 @@ from typing import Any
 
 from app.config import get_settings
 from app.llm.groq_client import GroqClientError, GroqConfigError, create_chat_completion
-from app.tools.executor import execute_tool_call
-from app.tools.schemas import TOOL_SCHEMAS
+from app.tools.executor import execute_tool_call, get_tool_privilege
+from app.tools.schemas import TOOL_SCHEMAS, PrivilegeTier
 
 SYSTEM_PROMPT = (
     "You are an SRE assistant investigating a digital twin of a small e-commerce system "
     "(user, order, payment, inventory, and notification services). Answer only using "
-    "information returned by your tools -- never invent service names, metrics, or "
-    "simulation results. Call whichever tools you need, including more than one in "
-    "sequence, before giving a final answer. If a tool call returns an error, say so "
-    "rather than guessing what it would have returned. For a hypothetical / what-if "
-    "question, use a simulate_* or calculate_blast_radius/find_bottleneck tool rather "
-    "than reasoning about it yourself."
+    "information returned by your tools -- never invent service names, metrics, simulation "
+    "results, or procedural guidance. You have two kinds of tools, and you decide per "
+    "question which (if any) you actually need:\n\n"
+    "1. Live-state and simulation tools (get_services, get_service, get_dependencies, "
+    "get_dependents, get_service_metrics, get_recent_events, get_incident_history, "
+    "get_current_system_state, simulate_service_failure, simulate_traffic_increase, "
+    "simulate_database_failure, simulate_cache_failure, simulate_high_latency, "
+    "simulate_high_error_rate, calculate_blast_radius, find_bottleneck, recommend_scaling, "
+    "create_incident) -- use these for questions about current status, metrics, topology, or "
+    "hypothetical 'what happens if X fails / traffic spikes' scenarios. Simulation results are "
+    "always computed deterministically by the tool -- never estimate one yourself.\n\n"
+    "2. search_knowledge_base -- searches runbooks, architecture docs, and incident reports "
+    "for documented operational guidance. Use this for questions about recovery procedures, "
+    "troubleshooting steps, or how something works operationally -- not for live data.\n\n"
+    "Some questions need both kinds together: e.g. 'Payment service is down, what should I "
+    "do?' benefits from a live-state tool call to confirm current status AND "
+    "search_knowledge_base for the recovery procedure. Call as many tools of either kind as "
+    "the question actually needs, including more than one in sequence -- but call none at all "
+    "for a question your own general knowledge already answers (e.g. 'what is a circuit "
+    "breaker'), and don't call search_knowledge_base just to pad out an answer that live tools "
+    "alone already fully answered. If a tool call returns an error, say so rather than "
+    "guessing what it would have returned. If search_knowledge_base returns no results, say "
+    "plainly that the knowledge base doesn't cover it rather than inventing a procedure."
 )
 
 
@@ -44,6 +70,7 @@ class ToolCallStep:
     tool_name: str
     arguments: dict[str, Any]
     result: dict[str, Any]
+    is_rag_query: bool = False
 
 
 @dataclass
@@ -125,7 +152,14 @@ async def run_agent(question: str) -> AgentResult:
                 except asyncio.TimeoutError:
                     result = {"error": f"Tool '{name}' timed out after {settings.agent_tool_timeout_ms}ms"}
 
-            steps.append(ToolCallStep(tool_name=name, arguments=arguments, result=result))
+            steps.append(
+                ToolCallStep(
+                    tool_name=name,
+                    arguments=arguments,
+                    result=result,
+                    is_rag_query=get_tool_privilege(name) == PrivilegeTier.KNOWLEDGE_RETRIEVAL,
+                )
+            )
             messages.append(
                 {
                     "role": "tool",

@@ -1,15 +1,16 @@
 """
 Tool call execution and privilege enforcement (docs/phases.md row 10:
-"tool execution loop against backend tool API"; docs/architecture.md §10:
-"the grouping is enforced, not just documented").
+"tool execution loop against backend tool API"; row 13:
+"search_knowledge_base"; docs/architecture.md §10: "the grouping is
+enforced, not just documented").
 
 `execute_tool_call(name, arguments)` is the one function app/agent/loop.py
 calls for every tool_call Groq returns. It never raises: a bad tool name,
-bad arguments, or a real backend failure all come back as a structured
-`{"error": "..."}` result instead, so one failed tool call can be fed back
-to the LLM as an observation (the same "handle failures cleanly, don't
-crash the process" rule Phase 8's backend_client.py established) rather
-than crashing the whole agent loop.
+bad arguments, a real backend failure, or a RAG (embedding/Qdrant) failure
+all come back as a structured `{"error": "..."}` result instead, so one
+failed tool call can be fed back to the LLM as an observation (the same
+"handle failures cleanly, don't crash the process" rule Phase 8's
+backend_client.py established) rather than crashing the whole agent loop.
 
 Privilege enforcement lives here, not in schemas.py (which only
 describes tools to the LLM) and not in backend_tools_client.py (which
@@ -17,15 +18,30 @@ only knows how to make HTTP calls): PRIVILEGED_MUTATING tools
 (create_incident) are never actually executed by this dispatcher, no
 matter how the LLM calls them -- see docs/architecture.md §10: "the agent
 can *propose* one but cannot silently execute it." Read-only, simulation,
-and PRIVILEGED_SAFE tools (recommend_scaling, which only ever returns a
-recommendation) execute for real.
+KNOWLEDGE_RETRIEVAL (search_knowledge_base), and PRIVILEGED_SAFE tools
+(recommend_scaling, which only ever returns a recommendation) execute for
+real.
+
+search_knowledge_base is dispatched differently from every other tool
+here: every other tool goes through backend_tools_client (an HTTP call to
+the Node backend); search_knowledge_base calls app/rag/retriever.py
+in-process instead, since RAG is the AI service's own responsibility
+(docs/architecture.md §2, §15) and never crosses the backend boundary.
+retrieve() is a synchronous, potentially CPU-bound (local embedding) call,
+so it runs via asyncio.to_thread rather than blocking the event loop the
+way every other (already-async, HTTP-bound) tool handler here does not
+need to.
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Awaitable, Callable
 
 from app.clients.backend_client import BackendUnavailableError
+from app.rag.embedding import EmbeddingError
+from app.rag.qdrant_client import QdrantUnavailableError
+from app.rag.retriever import retrieve as retrieve_knowledge
 from app.tools import backend_tools_client as tools_client
 from app.tools.schemas import TOOL_PRIVILEGE, PrivilegeTier
 
@@ -100,6 +116,32 @@ async def _recommend_scaling(args: dict[str, Any]) -> Any:
     return await tools_client.recommend_scaling(args["serviceName"])
 
 
+async def _search_knowledge_base(args: dict[str, Any]) -> Any:
+    """
+    The RAG side of the agent's tool set (docs/phases.md row 13). Never
+    calls backend_tools_client -- goes straight to app/rag/retriever.py,
+    the AI service's own Qdrant-backed knowledge store.
+    """
+    query = args["query"]
+    top_k = args.get("topK", 5)
+    chunks = await asyncio.to_thread(retrieve_knowledge, query, top_k)
+    return {
+        "query": query,
+        "resultCount": len(chunks),
+        "results": [
+            {
+                "documentId": chunk.document_id,
+                "title": chunk.title,
+                "documentType": chunk.document_type,
+                "relatedService": chunk.related_service,
+                "score": chunk.score,
+                "text": chunk.text,
+            }
+            for chunk in chunks
+        ],
+    }
+
+
 async def _propose_create_incident(args: dict[str, Any]) -> Any:
     """
     PRIVILEGED_MUTATING: deliberately never calls
@@ -143,6 +185,8 @@ _TOOL_FUNCTIONS: dict[str, ToolFunction] = {
     "recommend_scaling": _recommend_scaling,
     # create_incident is intentionally NOT wired to tools_client.create_incident here.
     "create_incident": _propose_create_incident,
+    # search_knowledge_base is intentionally NOT wired to tools_client -- it never reaches the backend.
+    "search_knowledge_base": _search_knowledge_base,
 }
 
 
@@ -163,6 +207,8 @@ async def execute_tool_call(name: str, arguments: dict[str, Any]) -> dict[str, A
         return {"error": f"Missing required argument {exc} for tool '{name}'"}
     except BackendUnavailableError as exc:
         return {"error": f"Backend tool call failed: {exc}"}
+    except (EmbeddingError, QdrantUnavailableError) as exc:
+        return {"error": f"Knowledge base search failed: {exc}"}
     except Exception as exc:  # noqa: BLE001 -- a tool failure must never crash the agent loop
         return {"error": f"Tool '{name}' raised an unexpected error: {exc}"}
 

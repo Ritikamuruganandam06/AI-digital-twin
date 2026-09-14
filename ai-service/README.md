@@ -6,9 +6,98 @@ embedding, Qdrant retrieval) — see `../docs/architecture.md` §2, §8, §15.
 Talks to the backend only through its HTTP tool API — never directly to
 MongoDB, Redis, or Kafka.
 
-## Phase 12 status: RAG ingestion and retrieval
+## Phase 13 status: Agent + Tools + RAG orchestration
 
-Implemented now, on top of Phase 11's embedding pipeline and Qdrant
+Implemented now, on top of Phase 10's tool-calling loop and Phase 12's
+retriever — this is the phase that finally connects them:
+
+- **`search_knowledge_base` is now a tool**, added to
+  `app/tools/schemas.py`'s `TOOL_DEFINITIONS` alongside the 18 backend
+  tools from Phase 10, under a new `PrivilegeTier.KNOWLEDGE_RETRIEVAL`.
+  This is the entire mechanism behind "Full decision logic (tools/RAG/
+  both/neither)" (`docs/phases.md` row 13): there is **no separate
+  classifier function anywhere in this codebase** that decides tool vs.
+  RAG. Per `docs/architecture.md` §14, "this decision is made by the LLM
+  itself via the tool-calling interface" — Groq is simply offered
+  `search_knowledge_base` as one more tool among 19, and
+  `app/agent/loop.py`'s `SYSTEM_PROMPT` is what teaches it when a
+  question needs live/simulation data, documented guidance, both, or
+  neither.
+- `app/tools/executor.py`'s `_search_knowledge_base()` dispatches
+  differently from every other tool: every other tool goes through
+  `backend_tools_client` (an HTTP call to the Node backend, per
+  `docs/architecture.md` §15's "AI service has no MongoDB/Redis/Kafka
+  client"); `search_knowledge_base` calls `app/rag/retriever.retrieve()`
+  **in-process**, since RAG has always been the AI service's own
+  responsibility (§2, §13) and never crosses the backend boundary. It
+  runs via `asyncio.to_thread` since `retrieve()` is a synchronous, local-
+  embedding call, unlike every other (already-async, HTTP-bound) tool
+  handler. `EmbeddingError`/`QdrantUnavailableError` are caught here the
+  same way `BackendUnavailableError` already was — a failed knowledge
+  search comes back as a structured `{"error": ...}` fed to the LLM, never
+  a crash.
+- `ToolCallStep` gained an `is_rag_query: bool` field (set from
+  `get_tool_privilege(name) == PrivilegeTier.KNOWLEDGE_RETRIEVAL`), now
+  also returned from `POST /agent/invoke` per step — enough to see, per
+  step, whether the agent used a live/simulation tool or a knowledge-base
+  search, without needing a persisted execution trace (still Phase 14's
+  job).
+- `SYSTEM_PROMPT` was rewritten to explicitly teach the two-kinds-of-tool
+  distinction from `docs/architecture.md` §14's decision table (live/
+  simulation tools for current-state and what-if questions;
+  `search_knowledge_base` for recovery/troubleshooting guidance; both
+  together for "X is down, what should I do?"-shaped questions; neither
+  for the LLM's own general knowledge) — this prompt text is the actual
+  "decision logic" the phase's deliverable refers to, not a code branch.
+
+**Verification (`docs/phases.md` row 13: "Test matrix of question types
+produces correct tool/RAG usage")** — `tests/test_agent_orchestration.py`
+is one test per row of `docs/architecture.md` §14's table:
+
+| Question | Decision | Test |
+|---|---|---|
+| "What is the current Payment Service latency?" | Tool only | `test_a_live_metrics_question_uses_a_tool_only_never_the_knowledge_base` |
+| "What is the Payment Service recovery procedure?" | RAG only | `test_a_recovery_procedure_question_uses_rag_only_never_a_backend_tool` |
+| "Payment Service is down. What should I do?" | Tool + RAG | `test_an_active_incident_question_uses_both_a_tool_and_rag_in_the_same_run` |
+| "What happens if Payment Service fails?" | Simulation tool | `test_a_what_if_question_uses_the_deterministic_simulation_tool_not_rag` |
+| "Explain what a circuit breaker is." | Neither | `test_a_general_knowledge_question_uses_neither_tools_nor_rag` |
+
+**One honest, important caveat about what these tests actually prove:**
+`docs/architecture.md` §14 is explicit the tool-vs-RAG decision is made
+*by the LLM itself* — there is no decision function in this codebase to
+unit-test directly, and Groq is unreachable in this build sandbox (no
+credentials, same as every prior phase). So each test above mocks
+`create_chat_completion` to return the decision a competent LLM *would*
+make for that question (standing in for the real thing) and then lets
+the real, unmocked `execute_tool_call()` dispatcher run — only its two
+leaf dependencies (`tools_client`'s backend calls, and the RAG retriever)
+are mocked at the boundary this sandbox can't reach. What's proven for
+real: when Groq decides to call a given tool, it is routed correctly —
+backend tools reach `tools_client`, `search_knowledge_base` reaches the
+retriever directly and never touches the backend, and a "neither"
+question makes zero tool calls. What's *not* proven here — because it
+can't be, without real Groq access — is that Groq itself would make
+these particular decisions for these particular questions.
+`tests/test_agent_orchestration_live.py` is the real version of this
+proof (a genuine Groq call deciding for itself, against a real backend
+and real Qdrant instance, ingesting the knowledge base first) — gated on
+all four of `GROQ_API_KEY` + backend + Qdrant + `huggingface.co` being
+reachable, and expected to skip here for the same reasons every other
+live test in this project does. Run it on your machine to see a real LLM
+make this call.
+
+Deliberately **not** in this phase: persisting the execution trace to
+MongoDB (`docs/architecture.md` §16, `agentexecutions` collection) — that
+stays Phase 14's job; `is_rag_query` is returned in the HTTP response
+precisely so a future Phase 14 trace-writer has it without recomputing
+anything. No changes to `docs/architecture.md` were needed — §14's
+decision table and "via the tool-calling interface" description already
+specified exactly this design when it was written in Phase 1.
+
+<details>
+<summary>Phase 12 status (RAG ingestion and retrieval) — still accurate, collapsed for length</summary>
+
+Implemented then, on top of Phase 11's embedding pipeline and Qdrant
 client:
 
 - **`../knowledge/` is now real** — 7 markdown documents across
@@ -44,12 +133,11 @@ client:
   knowledge found" is a normal return value (an empty list), not an
   error.
 
-Deliberately **not** in this phase (`docs/phases.md` row 12's scope is
-"chunking pipeline, `knowledge/` documents ingested, retriever" — nothing
-more): nothing wired into the agent loop or a new HTTP endpoint — Phase
-13 ("Agent + Tools + RAG orchestration") is what decides *when* to call
-`retrieve()` at all, the same way Phase 11's Qdrant client stayed
-unwired until this phase gave it something real to search.
+A real chunker bug was found and fixed this phase via testing against the
+real knowledge base, not a synthetic edge case — see the Phase 12 design
+decisions further down for the full story.
+
+</details>
 
 <details>
 <summary>Phase 11 status (Qdrant + embedding model) — still accurate, collapsed for length</summary>
@@ -177,7 +265,7 @@ anywhere else yet — Phase 10 is what wires it into the agent loop against
 
 </details>
 
-## Structure (through Phase 12)
+## Structure (through Phase 13)
 
 ```
 ai-service/
@@ -189,24 +277,24 @@ ai-service/
 │   ├── api/
 │   │   ├── health.py        GET /health
 │   │   ├── backend_proxy.py GET /api/backend/services (Phase 8's boundary-proof endpoint)
-│   │   └── agent.py         Phase 10 — POST /agent/invoke
+│   │   └── agent.py         Phase 10 — POST /agent/invoke; Phase 13 adds is_rag_query per step
 │   ├── clients/
 │   │   └── backend_client.py  the ONLY code that talks to the Node backend directly (Phase 8's boundary proof; NOT a tool)
 │   ├── llm/
 │   │   └── groq_client.py     the ONLY code that talks to Groq (Phase 9; tools/tool_choice added in Phase 10)
-│   ├── rag/                    not yet wired into anything else -- see Phase 12's own "Deliberately not" note
+│   ├── rag/                    wired into the agent loop as of Phase 13, via search_knowledge_base
 │   │   ├── embedding.py        Phase 11 — embed_text()/embed_texts() via fastembed, get_embedding_dimension()
 │   │   ├── qdrant_client.py    Phase 11 — ensure_collection()/upsert_points()/search() against a real Qdrant instance
 │   │   ├── loader.py           Phase 12 — parses knowledge/*.md frontmatter, derives metadata from path
 │   │   ├── chunker.py          Phase 12 — chunk_document(): CHUNK_SIZE_CHARS=1000 / CHUNK_OVERLAP_CHARS=150
 │   │   ├── ingest.py           Phase 12 — ingest_knowledge_base(): loader -> chunker -> embed -> upsert; `python -m app.rag.ingest`
-│   │   └── retriever.py        Phase 12 — retrieve(): embed question -> search -> relevance-filter -> chunks
-│   ├── tools/                  Phase 10
-│   │   ├── schemas.py          TOOL_DEFINITIONS / TOOL_SCHEMAS / TOOL_PRIVILEGE (18 tools, 4 privilege tiers)
-│   │   ├── backend_tools_client.py   one async function per tool -> backend/src/tools/* route
-│   │   └── executor.py         execute_tool_call() — dispatch + privilege enforcement, never raises
-│   └── agent/                  Phase 10
-│       └── loop.py             run_agent() — the tool-calling loop (iteration cap, per-tool timeout)
+│   │   └── retriever.py        Phase 12 — retrieve(): embed question -> search -> relevance-filter -> chunks; called directly by executor.py as of Phase 13
+│   ├── tools/                  Phase 10; Phase 13 adds search_knowledge_base
+│   │   ├── schemas.py          TOOL_DEFINITIONS / TOOL_SCHEMAS / TOOL_PRIVILEGE (19 tools, 5 privilege tiers)
+│   │   ├── backend_tools_client.py   one async function per backend tool -> backend/src/tools/* route (search_knowledge_base is NOT here -- it never calls the backend)
+│   │   └── executor.py         execute_tool_call() — dispatch + privilege enforcement, never raises; search_knowledge_base calls app/rag/retriever.py directly
+│   └── agent/                  Phase 10; Phase 13 rewrites SYSTEM_PROMPT for tool/RAG decision logic
+│       └── loop.py             run_agent() — the tool-calling loop (iteration cap, per-tool timeout); ToolCallStep.is_rag_query added Phase 13
 ├── tests/
 │   ├── test_health.py
 │   ├── test_backend_client.py           unit tests, httpx mocked
@@ -214,7 +302,7 @@ ai-service/
 │   ├── test_groq_client.py              unit tests, httpx mocked (always run)
 │   ├── test_groq_client_live.py         REAL Groq call — skipped unless GROQ_API_KEY is set
 │   ├── test_backend_tools_client.py     Phase 10 — unit tests, httpx mocked
-│   ├── test_executor.py                 Phase 10 — dispatch + THE privilege-enforcement test
+│   ├── test_executor.py                 Phase 10 — dispatch + privilege-enforcement; Phase 13 adds search_knowledge_base dispatch + error-handling tests
 │   ├── test_agent_loop.py               Phase 10 — control-flow tests, Groq + executor both mocked
 │   ├── test_agent_endpoint.py           Phase 10 — HTTP layer only, run_agent mocked
 │   ├── test_agent_live.py               Phase 10 — REAL end-to-end: real Groq + real backend, both required
@@ -224,7 +312,9 @@ ai-service/
 │   ├── test_chunker.py                  Phase 12 — REAL, against the actual knowledge/ documents (always run, no network needed)
 │   ├── test_ingest.py                   Phase 12 — orchestration logic, embedding/Qdrant mocked (always run)
 │   ├── test_retriever.py                Phase 12 — score-filtering logic, embedding/Qdrant mocked (always run)
-│   └── test_rag_live.py                 Phase 12 — THE real "question -> relevant chunks" proof (needs real Qdrant + model download)
+│   ├── test_rag_live.py                 Phase 12 — THE real "question -> relevant chunks" proof (needs real Qdrant + model download)
+│   ├── test_agent_orchestration.py      Phase 13 — THE test matrix: one test per docs/architecture.md §14 decision-table row, Groq mocked, executor real
+│   └── test_agent_orchestration_live.py Phase 13 — REAL end-to-end: real Groq decides tool vs RAG vs both itself (needs Groq + backend + Qdrant + HF, all four)
 ├── requirements.txt
 ├── pytest.ini
 └── .env.example
@@ -399,6 +489,30 @@ for doc in load_all_documents(Path('../knowledge')):
 "
 ```
 
+Phase 13's verification (`docs/phases.md` row 13: "Test matrix of question
+types produces correct tool/RAG usage") is primarily a test-suite proof —
+see "Tests" below — but the same `POST /agent/invoke` endpoint from Phase
+10 is now the one place all of it comes together:
+
+```bash
+# with the Node backend (port 4000, ideally seeded), this service (port
+# 8000), a real GROQ_API_KEY, and an ingested Qdrant instance all running:
+curl -s -X POST http://localhost:8000/agent/invoke \
+  -H "Content-Type: application/json" \
+  -d '{"question": "Payment service is down. What should I do?"}' | json_pp
+```
+
+With everything real, expect `steps` to contain both a live-state tool
+call (e.g. `get_service`) with `is_rag_query: false` and a
+`search_knowledge_base` call with `is_rag_query: true`, and `answer` to
+combine both — current status plus the documented recovery procedure.
+This build sandbox has none of the four preconditions (no Groq
+credentials, no backend/Qdrant running, `huggingface.co` blocked), so the
+same command here returns the same honest `groq_error` response Phase 10
+already documented above — `search_knowledge_base` being offered to Groq
+doesn't change that failure mode, since the request never gets past
+reaching Groq at all in this sandbox.
+
 ## Tests
 
 ```bash
@@ -407,8 +521,8 @@ source .venv/bin/activate
 pytest -v
 ```
 
-75 tests. Five require real, unmocked network access this build sandbox
-doesn't have and are **automatically skipped** here — 5 skips total, 70
+86 tests. Six require real, unmocked network access this build sandbox
+doesn't have and are **automatically skipped** here — 6 skips total, 80
 passed:
 
 - `test_groq_client_live.py` — real Groq call; skipped, `GROQ_API_KEY` unset.
@@ -427,6 +541,12 @@ passed:
   — Phase 12's own "Question -> relevant chunks retrieved" proof, ingesting
   the real 7-document knowledge base and retrieving against it; skipped,
   same two preconditions as the Qdrant round-trip test.
+- `test_agent_orchestration_live.py::test_a_real_agent_run_combines_a_live_tool_and_a_real_rag_search_for_one_question`
+  — Phase 13's real end-to-end proof: a genuine Groq call that itself
+  decides to use both a live tool and `search_knowledge_base` for one
+  question, against a really-ingested Qdrant instance and a really-running
+  backend; skipped, needs all four of Groq/backend/Qdrant/`huggingface.co`
+  reachable at once, none of which this sandbox has.
 
 Everything else — including two fully REAL (not mocked, no network
 needed) proofs against this project's actual `knowledge/` documents,
@@ -434,16 +554,20 @@ needed) proofs against this project's actual `knowledge/` documents,
 and `test_chunker.py::test_chunking_the_real_knowledge_base_produces_sane_output`,
 plus `test_qdrant_client.py::test_functions_raise_a_clean_error_when_qdrant_is_unreachable`
 (a REAL connection-refused proof against `127.0.0.1:1`, the same
-technique `backend/tests/kafka.negative.test.ts` uses for Kafka) — mocks
-only its actual external network boundary (`httpx`/Groq/the tool
-executor/the embedding model/Qdrant, as appropriate) and needs no real
-credentials or running services; all pass in this sandbox. None of the 5
-skipped tests' proofs has been run for real by pytest itself here — the
-manual commands under "Verify" above substitute for that, following the
-same deferral pattern Phase 5 used for the Kafka broker. Set a real
-`GROQ_API_KEY`, start the Node backend, and start a real Qdrant instance
-with normal internet access, then re-run `pytest -v` to get all five
-proofs from pytest itself on your machine.
+technique `backend/tests/kafka.negative.test.ts` uses for Kafka), plus
+Phase 13's own `test_agent_orchestration.py` (the test matrix — Groq
+mocked with the decision a competent LLM would make per question, but
+the actual `execute_tool_call()` dispatcher underneath runs for real,
+only its `tools_client`/RAG-retriever leaf calls mocked) — mocks only its
+actual external network boundary (`httpx`/Groq/the tool executor/the
+embedding model/Qdrant, as appropriate) and needs no real credentials or
+running services; all pass in this sandbox. None of the 6 skipped tests'
+proofs has been run for real by pytest itself here — the manual commands
+under "Verify" above substitute for that, following the same deferral
+pattern Phase 5 used for the Kafka broker. Set a real `GROQ_API_KEY`,
+start the Node backend, and start a real Qdrant instance with normal
+internet access, then re-run `pytest -v` to get all six proofs from
+pytest itself on your machine.
 
 ## What could and couldn't be verified here
 
@@ -497,8 +621,76 @@ What's actually been verified here, versus what needs your machine:
   (or `python -m app.rag.ingest` plus the `python3 -c` snippet under
   "Verify") to get docs/phases.md row 12's actual "Question -> relevant
   chunks retrieved" proof on your machine.
+- **Phase 13 — the tool/RAG dispatch mechanics are fully verified here,
+  for real:** `test_agent_orchestration.py`'s five tests exercise the
+  real, unmocked `execute_tool_call()` for every row of
+  `docs/architecture.md` §14's decision table, proving that when a tool
+  call happens, it's routed correctly (backend tools reach
+  `tools_client`; `search_knowledge_base` reaches the retriever directly
+  and never the backend); `test_executor.py`'s new tests prove
+  `search_knowledge_base`'s own dispatch, argument defaulting, and clean
+  error handling for both `EmbeddingError` and `QdrantUnavailableError`.
+  **What is not verified here is Groq's own decision-making** — every
+  test above mocks `create_chat_completion` to return the decision a
+  competent LLM would make, because Groq itself is unreachable in this
+  sandbox (same `api.groq.com` block as every prior phase). Whether a
+  real Llama model, given both kinds of tools and this phase's
+  `SYSTEM_PROMPT`, actually makes the same five decisions is exactly what
+  `test_agent_orchestration_live.py` checks, and it's expected to skip
+  here for the same reason. Run it on your machine (with the backend
+  seeded and a knowledge base ingested) to get that proof for real.
 
 ## Design decisions
+
+**Phase 13:**
+
+- **`search_knowledge_base` is offered as one more tool, not a second,
+  separately-invoked code path.** `docs/architecture.md` §14 says the
+  decision is "made by the LLM itself via the tool-calling interface ...
+  rather than a separate hardcoded classifier" — the most literal way to
+  honor that is to put RAG retrieval behind the exact same tool-calling
+  mechanism Phase 10 already built, rather than writing an if/else that
+  inspects the question first. There is deliberately no classifier
+  function anywhere in this codebase; `SYSTEM_PROMPT` is the entire
+  "decision logic."
+- **A new `PrivilegeTier.KNOWLEDGE_RETRIEVAL`, not `READ_ONLY`.**
+  `search_knowledge_base` is safe and side-effect-free like the
+  `READ_ONLY` backend tools, but it structurally never reaches the
+  backend at all — tagging it separately keeps `docs/architecture.md`
+  §10's "the grouping is enforced, not just documented" promise honest:
+  a future reader of `TOOL_PRIVILEGE` can tell, without reading
+  `executor.py`, that this one tool doesn't follow the backend-HTTP-call
+  pattern every other entry does.
+- **`search_knowledge_base` calls `app/rag/retriever.py` directly from
+  `executor.py`, never through `backend_tools_client`.** RAG has been the
+  AI service's own responsibility since `docs/architecture.md` §2 was
+  written in Phase 1 ("Python FastAPI AI service ... RAG retrieval") —
+  routing it through the backend would mean giving the backend a reason
+  to know about Qdrant, which it structurally never should (§13: Qdrant
+  is "not a general application database", and it's the AI service's
+  vector store specifically).
+- **`retrieve()` runs via `asyncio.to_thread`, not awaited directly.**
+  Every other tool handler in `executor.py` is naturally async (an httpx
+  call to the backend); `retrieve()` is synchronous and can do real local
+  CPU work (embedding). Calling it directly would block the event loop
+  for every other concurrent request this FastAPI service is handling;
+  `asyncio.to_thread` keeps the same "tools never block the agent loop"
+  property Phase 10 established for backend calls.
+- **`ToolCallStep.is_rag_query`, not a name-based check sprinkled through
+  the codebase.** Computed once, in `loop.py`, from `get_tool_privilege()`
+  — the same privilege-tier lookup `executor.py` already uses for
+  enforcement — and returned through `POST /agent/invoke`. This makes
+  "which steps used the knowledge base" a stable, structural fact instead
+  of something every future consumer (Phase 14's trace writer, Phase 17's
+  frontend trace view) would otherwise have to re-derive by checking tool
+  names against a hardcoded list.
+- **No hardcoded classifier, and no new tests trying to unit-test one.**
+  Because the decision genuinely lives inside Groq's own reasoning (not
+  in this codebase), the test matrix docs/phases.md row 13 asks for tests
+  *dispatch correctness given a decision*, not *the decision itself* —
+  see "What could and couldn't be verified here" for exactly where that
+  line falls and why `test_agent_orchestration_live.py` exists as the
+  real counterpart.
 
 **Phase 12:**
 

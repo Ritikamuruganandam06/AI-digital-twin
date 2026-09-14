@@ -179,7 +179,40 @@ cap when a full-size paragraph followed a full chunk — caught by a test
 running against the real documents, not a synthetic edge case. 70 passed,
 5 skipped, all for confirmed reasons, no failures.
 
-See `docs/phases.md` for what Phase 13 onward will add, and
+**Phase 13 complete:** the agent loop can now use tools, RAG, both, or
+neither, per question — and the entire "decision logic"
+`docs/phases.md` row 13 asks for lives in one place: `search_knowledge_base`
+(Phase 12's retriever) is offered to Groq as one more tool alongside the
+18 backend tools from Phase 10, under a new
+`PrivilegeTier.KNOWLEDGE_RETRIEVAL`, and `ai-service/app/agent/loop.py`'s
+system prompt teaches it when each kind is warranted — exactly what
+`docs/architecture.md` §14 specified back in Phase 1 ("made by the LLM
+itself via the tool-calling interface ... rather than a separate
+hardcoded classifier"). There is deliberately no classifier function
+anywhere in this codebase. Unlike every other tool, `search_knowledge_base`
+never reaches the Node backend — `ai-service/app/tools/executor.py` calls
+`app/rag/retriever.py` in-process instead, since RAG has always been the
+AI service's own responsibility (§2, §15). Each step in the agent's
+response now also carries `is_rag_query`, so which kind of tool the agent
+used is visible per step without needing a persisted trace (Phase 14).
+**One honest caveat, the same shape as every prior phase:** row 13's
+verification is "Test matrix of question types produces correct tool/RAG
+usage" — since the decision itself is made by Groq, not this codebase,
+and Groq is unreachable here (same `api.groq.com` block as every prior
+phase), `ai-service/tests/test_agent_orchestration.py`'s five tests (one
+per row of §14's decision table) mock only Groq's decision and let the
+real, unmocked dispatcher underneath prove the *routing* is correct —
+backend tools reach the backend, `search_knowledge_base` reaches the
+retriever and never the backend. Whether a real Llama model actually
+makes these same five decisions is what
+`test_agent_orchestration_live.py` checks for real, gated on Groq +
+backend + Qdrant + `huggingface.co` all being reachable at once — none of
+which this sandbox has, so it's expected to skip here too. 86 tests, 80
+passed, 6 skipped, all for confirmed reasons, no failures. See
+`ai-service/README.md`'s Phase 13 section for the exact commands and full
+design-decision writeups.
+
+See `docs/phases.md` for what Phase 14 onward will add, and
 `backend/README.md` / `ai-service/README.md` for how to run, seed, and
 verify what exists so far — including exactly which parts of each phase
 could be verified in the sandbox this was built in, and which need your
