@@ -112,18 +112,4 @@ cd frontend && npm test
 
 ---
 
-## Documentation
 
-For deeper detail, see:
-
-- [`docs/architecture.md`](docs/architecture.md)
-- [`docs/phases.md`](docs/phases.md)
-- [`docs/env-vars.md`](docs/env-vars.md)
-- [`backend/README.md`](backend/README.md), [`ai-service/README.md`](ai-service/README.md), [`frontend/README.md`](frontend/README.md)
-- [`knowledge/README.md`](knowledge/README.md)
-
----
-
-## Interview Summary
-
-This is a digital twin of a small e-commerce backend — real services, dependencies, and incidents modeled in MongoDB — paired with an AI agent that investigates it. The agent never calculates anything itself: it calls real backend tools for live data, a deterministic engine for simulations, and RAG over runbooks for documented procedures, then uses an LLM only to explain the results. The AI service is architecturally boxed in — it can only reach live data by calling back through the backend's own API — and every agent run is fully traced and persisted.
