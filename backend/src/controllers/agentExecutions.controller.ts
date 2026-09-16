@@ -4,11 +4,6 @@ import { assertDatabaseConnected } from '../config/database';
 import { agentExecutionRepository } from '../repositories/agentExecution.repository';
 import { AppError } from '../utils/AppError';
 
-/**
- * docs/phases.md row 14's verification: "Trace retrievable via API".
- * Read-only, same shape as incidents.controller.ts's list/get pair.
- */
-
 export const listAgentExecutionsHandler: RequestHandler = async (req, res, next) => {
   try {
     assertDatabaseConnected();

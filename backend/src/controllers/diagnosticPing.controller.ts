@@ -3,15 +3,6 @@ import { diagnosticPingRepository } from '../repositories/diagnosticPing.reposit
 import { assertDatabaseConnected } from '../config/database';
 import { getOrSetCache, invalidateCache } from '../cache/cacheAside';
 import { AppError } from '../utils/AppError';
-
-/**
- * Phase 4 cache-aside demo: a single well-known key caches the 100 most
- * recent pings, and every `limit` request slices that cached array instead
- * of each distinct `?limit=` value getting its own cache entry. That keeps
- * invalidation trivial — one key to delete on every write — at the cost of
- * always fetching up to 100 rows from Mongo on a cache miss. Fine for a
- * proof-of-cache; a real high-traffic endpoint would tune this differently.
- */
 const RECENT_PINGS_CACHE_KEY = 'diagnostics:pings:recent:top100';
 const RECENT_PINGS_CACHE_TTL_SECONDS = 30;
 
@@ -48,9 +39,6 @@ export const listPings: RequestHandler = async (req, res, next) => {
       { ttlSeconds: RECENT_PINGS_CACHE_TTL_SECONDS }
     );
 
-    // cacheHit is exposed in the response so it's directly observable
-    // (curl twice in a row and watch it flip to true) instead of only
-    // provable by reading Redis yourself.
     res.status(200).json({ data: top100.slice(0, limit), cacheHit });
   } catch (err) {
     next(err);

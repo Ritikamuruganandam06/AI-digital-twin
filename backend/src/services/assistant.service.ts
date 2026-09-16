@@ -8,18 +8,7 @@ import {
 } from '../repositories/agentExecution.repository';
 import { AppError } from '../utils/AppError';
 
-/**
- * docs/architecture.md §3's sequence diagram, the middle arrow: FE -> BE
- * (POST /api/assistant/ask) -> AI (POST /agent/invoke) -> ... -> AI
- * returns answer + trace -> BE persists it -> BE returns to FE. This
- * function is "BE persists it": it calls the AI service for real, then
- * turns its response into exactly the record shape
- * agentExecution.model.ts defines, and writes it -- one execution record
- * per call, whether the agent finished cleanly, hit the iteration limit,
- * or couldn't reach Groq at all (all three are real, meaningful outcomes
- * worth a trace; only a totally unreachable AI service, below, produces
- * no trace at all, since nothing resembling an execution happened).
- */
+
 
 export interface AskAssistantInput {
   question: string;

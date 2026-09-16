@@ -21,15 +21,6 @@ export interface SeedServiceDefinition {
   health: SeedHealthSnapshot;
 }
 
-/**
- * The five services named in docs/architecture.md §1 (User, Order, Payment,
- * Inventory, Notification), wired into a small but real dependency graph:
- * order-service is the hub that depends on the other four, which is exactly
- * the shape docs/architecture.md §3's example question needs ("What happens
- * if Payment Service goes down?") — Payment going down has somewhere to
- * cascade to. Payment is seeded already `degraded` so the topology has
- * realistic variety from the first query, not five identical "healthy" rows.
- */
 export const SEED_SERVICES: SeedServiceDefinition[] = [
   {
     name: 'user-service',

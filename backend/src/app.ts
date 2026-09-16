@@ -18,11 +18,7 @@ import { assistantRouter } from './routes/assistant.route';
 import { agentExecutionsRouter } from './routes/agentExecutions.route';
 import { toolsRouter } from './tools/tools.route';
 
-/**
- * Builds an Express app without starting a listener. Kept separate from
- * server.ts so tests (tests/health.test.ts) can exercise the app directly
- * with supertest instead of binding a real port.
- */
+
 export function createApp(): Application {
   const app = express();
 
@@ -31,29 +27,8 @@ export function createApp(): Application {
   app.use(helmet());
   app.use(cors());
   app.use(express.json());
-
-  // Order matters: requestId must run before requestLogger so the logger
-  // can reuse req.id instead of generating a second, different one.
   app.use(requestId);
   app.use(requestLogger);
-
-  // Phase 15: authenticate is wired explicitly per mount, not globally,
-  // so the auth boundary is visible right here rather than only
-  // documented — the same "grouping is enforced, not just documented"
-  // ethos docs/architecture.md §10 established for tool privilege tiers.
-  //
-  // /health and /api/auth stay unauthenticated on purpose (you can't be
-  // required to hold a JWT to get one, or to check if the server is up).
-  // /internal/tools stays outside JWT auth too: it's a separate
-  // service-to-service trust boundary between the AI service and this
-  // backend (docs/architecture.md §15), not user-facing RBAC.
-  //
-  // Phase 16: rateLimiter is mounted on /api broadly, ahead of every /api
-  // route including /api/auth -- unlike authenticate, it deliberately
-  // covers the unauthenticated auth routes too, since login/register are
-  // exactly what a brute-force/credential-stuffing attempt would target.
-  // /health and /internal/tools are excluded for the same reasons they're
-  // excluded from authenticate above.
   app.use('/health', healthRouter);
   app.use('/api', rateLimiter);
   app.use('/api/auth', authRouter);
@@ -65,9 +40,6 @@ export function createApp(): Application {
   app.use('/api/assistant', authenticate, assistantRouter);
   app.use('/api/executions', authenticate, agentExecutionsRouter);
   app.use('/internal/tools', toolsRouter);
-
-  // Must be last: notFound catches anything no router matched, errorHandler
-  // catches anything thrown/passed to next() by everything above it.
   app.use(notFound);
   app.use(errorHandler);
 

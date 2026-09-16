@@ -8,13 +8,6 @@ export interface HealthCheckResult {
 
 export type HealthCheckFn = () => Promise<HealthCheckResult>;
 
-/**
- * A registry, not a hardcoded list: Phase 3 (MongoDB), Phase 4 (Redis), and
- * Phase 5 (Kafka) each call registerHealthCheck() from their own module when
- * they wire up their client, and GET /health automatically starts reporting
- * them — src/routes/health.route.ts and src/controllers/health.controller.ts
- * never need to change again as dependencies are added.
- */
 const checks = new Map<string, HealthCheckFn>();
 
 export function registerHealthCheck(name: string, check: HealthCheckFn): void {

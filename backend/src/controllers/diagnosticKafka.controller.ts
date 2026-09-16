@@ -20,11 +20,6 @@ export const publishPing: RequestHandler = async (req, res, next) => {
     }
 
     const published = await publishDiagnosticMessage(message.trim());
-
-    // 202 Accepted, not 201 Created: publishing succeeded, but consumption
-    // is asynchronous — unlike the Mongo/Redis diagnostics, there is no
-    // "it's done" moment to report synchronously. GET this same resource
-    // shortly after to see it land.
     res.status(202).json({ data: published });
   } catch (err) {
     next(err);
