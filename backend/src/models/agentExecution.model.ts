@@ -44,17 +44,9 @@ const retrievedDocumentSchema = new Schema(
 
 const agentExecutionSchema = new Schema(
   {
-    // Phase 15 populates this from a real JWT once auth exists; every
-    // execution created before then is anonymous, not "owned" by a guess.
     userId: { type: String, required: false },
     question: { type: String, required: true, trim: true, minlength: 1, maxlength: 2000 },
     finalResponse: { type: String, required: true },
-    // Derived once, at write time, from the AI service's own
-    // `stopped_reason` (see assistant.service.ts's mapStatus()) --
-    // 'completed' (a real final answer), 'incomplete' (hit
-    // AGENT_MAX_ITERATIONS without one), or 'error' (couldn't reach/use
-    // Groq). `stoppedReason` keeps the AI service's raw value alongside
-    // it so this mapping is never the only place that information lives.
     status: { type: String, enum: ['completed', 'incomplete', 'error'], required: true },
     stoppedReason: { type: String, required: true },
     iterations: { type: Number, required: true },
@@ -64,9 +56,6 @@ const agentExecutionSchema = new Schema(
   { timestamps: true }
 );
 
-// Two real access patterns this phase ships: "recent executions overall"
-// and, once Phase 15 populates userId, "one user's execution history" --
-// same shape docs/architecture.md §5 names for this exact index.
 agentExecutionSchema.index({ createdAt: -1 });
 agentExecutionSchema.index({ userId: 1, createdAt: -1 });
 

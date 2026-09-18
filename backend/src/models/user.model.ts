@@ -1,11 +1,6 @@
 import { Schema, model, type InferSchemaType, type HydratedDocument } from 'mongoose';
 
-/**
- * docs/architecture.md §5: "users — accounts, roles (USER / OPERATOR /
- * ADMIN)". Only `passwordHash` is ever stored — the plaintext password
- * exists only transiently inside src/services/auth.service.ts (the only
- * place bcrypt runs) and is never logged or persisted anywhere.
- */
+
 const userSchema = new Schema(
   {
     email: { type: String, required: true, trim: true, lowercase: true, unique: true },

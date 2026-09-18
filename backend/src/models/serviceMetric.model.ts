@@ -1,12 +1,6 @@
 import { Schema, model, type InferSchemaType, type HydratedDocument } from 'mongoose';
 
-/**
- * Time-series-ish metrics samples (docs/architecture.md §5: "latency, error
- * rate, traffic, capacity"). `serviceName` is denormalized alongside the
- * `serviceId` reference purely so list/debug queries don't need a $lookup
- * just to know which service a sample belongs to — `serviceId` remains the
- * real relationship every query actually filters/sorts by.
- */
+
 const serviceMetricSchema = new Schema(
   {
     serviceId: { type: Schema.Types.ObjectId, ref: 'Service', required: true },
@@ -21,9 +15,6 @@ const serviceMetricSchema = new Schema(
   { timestamps: false }
 );
 
-// docs/architecture.md §5: "servicemetrics.{serviceId, timestamp} compound"
-// — this is the index every query in this phase actually uses (fetch a
-// service's most recent N samples, newest first).
 serviceMetricSchema.index({ serviceId: 1, timestamp: -1 });
 
 export type ServiceMetricAttrs = InferSchemaType<typeof serviceMetricSchema>;
