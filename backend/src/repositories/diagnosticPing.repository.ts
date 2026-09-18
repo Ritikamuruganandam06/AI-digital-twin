@@ -14,12 +14,7 @@ function toRecord(doc: DiagnosticPingDocument): DiagnosticPingRecord {
   };
 }
 
-/**
- * Data-access layer: controllers never import the Mongoose model directly.
- * This is the seam later phases' repositories (services, incidents, agent
- * executions) will follow, and the seam that makes it possible to unit-test
- * a controller against a fake repository without a database at all.
- */
+
 export const diagnosticPingRepository = {
   async create(message: string): Promise<DiagnosticPingRecord> {
     const doc = await DiagnosticPing.create({ message });

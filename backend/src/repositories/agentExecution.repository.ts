@@ -69,12 +69,7 @@ function toRecord(doc: AgentExecutionDocument): AgentExecutionRecord {
   };
 }
 
-/**
- * Dumb data-access seam over the `agentexecutions` collection -- same
- * division of responsibility incident.repository.ts established:
- * validation and cross-collection logic live in the service layer
- * (assistant.service.ts), not here.
- */
+
 export const agentExecutionRepository = {
   async create(input: CreateAgentExecutionInput): Promise<AgentExecutionRecord> {
     const doc = await AgentExecution.create(input);

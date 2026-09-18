@@ -14,7 +14,6 @@ export function registerHealthCheck(name: string, check: HealthCheckFn): void {
   checks.set(name, check);
 }
 
-/** Test-only: lets each test suite start from a clean registry. */
 export function clearHealthChecks(): void {
   checks.clear();
 }

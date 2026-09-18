@@ -49,7 +49,6 @@ export const eventRepository = {
     return docs.map(toRecord);
   },
 
-  /** Test/seed-only: wipes the collection so a re-seed starts clean. */
   async deleteAll(): Promise<void> {
     await Event.deleteMany({});
   },

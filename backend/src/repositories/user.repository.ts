@@ -27,12 +27,7 @@ function toRecord(doc: UserDocument): UserRecord {
   };
 }
 
-/**
- * Dumb data-access seam over the `users` collection — same division of
- * responsibility incident.repository.ts / agentExecution.repository.ts
- * established: hashing, validation and duplicate-email handling live in
- * src/services/auth.service.ts, not here.
- */
+
 export const userRepository = {
   async create(input: CreateUserInput): Promise<UserRecord> {
     const doc = await User.create(input);
@@ -49,7 +44,6 @@ export const userRepository = {
     return doc ? toRecord(doc) : null;
   },
 
-  /** Test/seed-only: wipes the collection so a test run/re-seed starts clean. */
   async deleteAll(): Promise<void> {
     await User.deleteMany({});
   },

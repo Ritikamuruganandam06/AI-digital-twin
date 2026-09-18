@@ -55,14 +55,8 @@ function toRecord(doc: ServiceDocument): ServiceRecord {
   };
 }
 
-/**
- * Data-access layer for the topology graph — controllers and
- * src/services/topology.service.ts never import the Mongoose model
- * directly, following the same seam diagnosticPing.repository.ts
- * established in Phase 3.
- */
+
 export const serviceRepository = {
-  /** Idempotent by name — this is what makes the seed script safe to re-run. */
   async upsertByName(input: UpsertServiceInput): Promise<ServiceRecord> {
     const doc = await Service.findOneAndUpdate(
       { name: input.name },
@@ -82,14 +76,12 @@ export const serviceRepository = {
     return doc ? toRecord(doc) : null;
   },
 
-  /** Resolves a list of service names (e.g. a service's `dependencies`) to full records, preserving no particular order. */
   async findByNames(names: string[]): Promise<ServiceRecord[]> {
     if (names.length === 0) return [];
     const docs = await Service.find({ name: { $in: names } }).exec();
     return docs.map(toRecord);
   },
 
-  /** Test/seed-only: wipes the collection so a re-seed starts clean. */
   async deleteAll(): Promise<void> {
     await Service.deleteMany({});
   },

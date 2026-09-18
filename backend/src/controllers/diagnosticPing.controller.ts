@@ -16,8 +16,6 @@ export const createPing: RequestHandler = async (req, res, next) => {
     }
 
     const record = await diagnosticPingRepository.create(message.trim());
-    // The cached "recent" list is now stale — clear it rather than wait out
-    // the TTL, so the next read reflects this write immediately.
     await invalidateCache(RECENT_PINGS_CACHE_KEY);
 
     res.status(201).json({ data: record });

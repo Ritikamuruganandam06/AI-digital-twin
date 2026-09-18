@@ -15,15 +15,6 @@ export interface AskAssistantInput {
   userId?: string;
 }
 
-/**
- * Maps ai-service's raw `stopped_reason` (app/agent/loop.py) onto this
- * schema's `status` enum. Exhaustive over the three values that codebase
- * can currently produce ('final_answer', 'iteration_limit', 'groq_error'),
- * and defensively falls back to 'error' for anything else instead of
- * throwing -- an unrecognized stopped_reason (e.g. a future ai-service
- * change) should be recorded honestly as "something went wrong", never
- * misreported as 'completed'.
- */
 export function mapStatus(stoppedReason: string): ExecutionStatus {
   switch (stoppedReason) {
     case 'final_answer':
@@ -35,16 +26,6 @@ export function mapStatus(stoppedReason: string): ExecutionStatus {
   }
 }
 
-/**
- * Flattens every RAG step's `result.results` (app/tools/executor.py's
- * _search_knowledge_base() shape) into the denormalized
- * `retrievedDocuments` list docs/architecture.md §16 asks for, so a
- * caller doesn't have to filter+parse `steps` just to see what grounded
- * this answer. Tolerant of a malformed/missing `results` shape (treats it
- * as "no documents from this step") rather than throwing -- a shape
- * mismatch in one step must never stop the whole execution from being
- * persisted.
- */
 export function extractRetrievedDocuments(response: AgentInvokeResponse): RetrievedDocumentRecord[] {
   const documents: RetrievedDocumentRecord[] = [];
 

@@ -64,7 +64,6 @@ export const incidentRepository = {
     return doc ? toRecord(doc) : null;
   },
 
-  /** Test/seed-only: wipes the collection so a re-seed starts clean. */
   async deleteAll(): Promise<void> {
     await Incident.deleteMany({});
   },

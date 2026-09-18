@@ -38,7 +38,6 @@ function toRecord(doc: ServiceMetricDocument): ServiceMetricRecord {
 }
 
 export const serviceMetricRepository = {
-  /** Bulk insert used by the seed script — a real metrics generator (later phases) would call create() one sample at a time instead. */
   async insertMany(inputs: CreateServiceMetricInput[]): Promise<void> {
     if (inputs.length === 0) return;
     await ServiceMetric.insertMany(inputs);
@@ -49,7 +48,6 @@ export const serviceMetricRepository = {
     return docs.map(toRecord);
   },
 
-  /** Test/seed-only: wipes the collection so a re-seed starts clean. */
   async deleteAll(): Promise<void> {
     await ServiceMetric.deleteMany({});
   },
