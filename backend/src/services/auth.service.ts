@@ -3,10 +3,6 @@ import { userRepository } from '../repositories/user.repository';
 import { signAccessToken, USER_ROLES, type UserRole } from '../utils/jwt';
 import { AppError } from '../utils/AppError';
 
-// Cost factor for bcrypt's key-stretching. 10 is bcrypt's own long-standing
-// default and is what most real deployments run in local dev; this is a
-// place to raise it later if hashing becomes a measured bottleneck, not
-// something to guess higher speculatively now.
 const BCRYPT_SALT_ROUNDS = 10;
 
 const INVALID_CREDENTIALS_MESSAGE = 'Invalid email or password';
@@ -27,16 +23,7 @@ export interface AuthResult {
   user: { id: string; email: string; role: UserRole };
 }
 
-/**
- * `role` defaults to USER. Self-selecting OPERATOR/ADMIN at registration is
- * allowed on purpose: docs/phases.md row 15 asks only for "JWT, RBAC
- * (USER/OPERATOR/ADMIN)" and "tests per role", and this phase has no
- * existing ADMIN account and no separate invite/promotion flow to gate
- * behind one — that's a real gap for a production system, called out
- * explicitly in the Phase 15 report rather than silently pretended away.
- * What IS enforced is that role must be one of the 3 real roles, not any
- * string.
- */
+
 export async function register(input: RegisterInput): Promise<AuthResult> {
   const email = input.email.trim().toLowerCase();
   const role = input.role ?? 'USER';
@@ -57,11 +44,7 @@ export async function register(input: RegisterInput): Promise<AuthResult> {
   return { token, user: { id: user.id, email: user.email, role: user.role } };
 }
 
-/**
- * Same 401 + identical message whether the email doesn't exist or the
- * password is wrong — never confirms/denies which one it was, standard
- * practice against account-enumeration.
- */
+
 export async function login(input: LoginInput): Promise<AuthResult> {
   const email = input.email.trim().toLowerCase();
   const user = await userRepository.findByEmail(email);

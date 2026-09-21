@@ -1,15 +1,7 @@
 import { cascadeFromOrigins } from './graph';
 import type { SimulationServiceState, SimulationResult, SimulatedServiceImpact } from './types';
 
-/**
- * docs/architecture.md §10's `simulate_database_failure` tool: the shared
- * database layer becomes unavailable, so every service that depends on it
- * (SimulationServiceState.dependsOnDatabase — defaults to true, see
- * types.ts) goes down immediately, and the outage cascades from there
- * exactly like an ordinary service failure — a service that itself doesn't
- * touch the database directly can still go down because something it
- * depends on does.
- */
+
 export function simulateDatabaseFailure(services: SimulationServiceState[]): SimulationResult {
   const directlyAffected = services.filter((s) => s.dependsOnDatabase !== false);
   const directNames = new Set(directlyAffected.map((s) => s.name));

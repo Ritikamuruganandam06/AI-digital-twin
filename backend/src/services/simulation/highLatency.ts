@@ -2,15 +2,7 @@ import { bfsClosure } from './graph';
 import { LATENCY_OUTAGE_MULTIPLIER, PROPAGATION_DECAY_FACTOR } from './constants';
 import type { SimulationServiceState, SimulationResult, SimulatedServiceImpact } from './types';
 
-/**
- * docs/architecture.md §11's "high latency" simulation type: `serviceName`
- * itself gets slow (e.g. a downstream network issue, not modeled further),
- * and every service that calls it — directly or transitively — inherits a
- * share of that added latency, decaying with distance
- * (PROPAGATION_DECAY_FACTOR): a service two hops away from the slow one is
- * waiting on it through an intermediary, so it feels a smaller, not equal,
- * share of the delay.
- */
+
 export function simulateHighLatency(
   services: SimulationServiceState[],
   serviceName: string,

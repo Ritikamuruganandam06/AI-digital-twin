@@ -11,17 +11,6 @@ export interface CacheAsideResult<T> {
   cacheHit: boolean;
 }
 
-/**
- * The cache-aside pattern from docs/architecture.md §6:
- *
- *   Request -> Redis -> hit? return : miss -> fetcher() -> store in Redis -> return
- *
- * If Redis is unreachable or a read/write fails, this falls back to calling
- * fetcher() directly and reports a miss rather than failing the request —
- * Redis is a cache, not the system of record (docs/architecture.md §6:
- * "nothing becomes the only place a piece of data lives in Redis"), so an
- * outage here should make responses slower, not broken.
- */
 export async function getOrSetCache<T>(
   key: string,
   fetcher: () => Promise<T>,

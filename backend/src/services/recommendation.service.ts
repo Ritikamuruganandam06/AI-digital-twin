@@ -1,16 +1,7 @@
 import { serviceRepository, type ServiceHealthRecord } from '../repositories/service.repository';
 import type { HealthStatus } from '../data/seedTopology';
 
-/**
- * docs/architecture.md §10's `recommend_scaling` tool: "returns a
- * recommendation, does not act." This is deliberately the simplest
- * possible deterministic rule over a service's CURRENT live health
- * (health.status/errorRatePercent/latencyMsP99), the same status field
- * find_bottleneck (Phase 7) already ranks by — not a second, competing
- * notion of "healthy" — rather than a capacity-planning model. Like
- * services/simulation/constants.ts, these multipliers are documented,
- * fixed assumptions, not measured values.
- */
+
 export const DOWN_SCALE_REPLICA_MULTIPLIER = 2;
 export const DEGRADED_SCALE_REPLICA_MULTIPLIER = 1.5;
 

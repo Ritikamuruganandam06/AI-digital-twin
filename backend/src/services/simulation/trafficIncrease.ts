@@ -13,13 +13,7 @@ interface UtilizationImpact {
   errorRatePercent: number;
 }
 
-/**
- * Deterministic load model: a service's baseline traffic is assumed to use
- * 1/3 of its real capacity (TRAFFIC_CAPACITY_MULTIPLIER), so utilization =
- * projectedTraffic / (baselineTraffic * 3). Below 70% utilization the extra
- * load is absorbed with only a small latency bump; between 70–100% the
- * service visibly degrades; above 100% it's considered overloaded.
- */
+
 function projectUtilizationImpact(
   baseline: SimulationServiceState['health'],
   projectedTrafficRps: number
@@ -55,13 +49,7 @@ function projectUtilizationImpact(
   };
 }
 
-/**
- * docs/architecture.md §10's `simulate_traffic_increase` tool. Increased
- * traffic to `serviceName` propagates 1:1 to every service it transitively
- * depends on (an order-service traffic spike means proportionally more
- * calls to payment/inventory/user/notification too) — a simplification
- * that doesn't model fan-out/fan-in ratios per call, documented as such.
- */
+
 export function simulateTrafficIncrease(
   services: SimulationServiceState[],
   serviceName: string,

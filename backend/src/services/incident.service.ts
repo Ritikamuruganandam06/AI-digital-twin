@@ -10,12 +10,7 @@ export interface CreateIncidentInput {
   severity: IncidentSeverity;
 }
 
-/**
- * Business-logic layer above incident.repository.ts: validates that the
- * primary service (and any named affected services) actually exist in the
- * topology before writing — the repository itself stays a dumb data-access
- * seam, same division of responsibility as topology.service.ts.
- */
+
 export async function createIncident(input: CreateIncidentInput): Promise<IncidentRecord> {
   const service = await serviceRepository.findByName(input.serviceName);
   if (!service) {

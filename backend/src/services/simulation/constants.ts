@@ -1,19 +1,4 @@
-/**
- * Every deliberately-chosen constant the simulation engine's formulas use,
- * gathered in one place so a reviewer (or a later phase tuning the engine
- * against real traffic patterns) doesn't have to hunt through each scenario
- * file for a magic number. None of these are measured — they're documented,
- * fixed assumptions that make the engine's output deterministic and
- * explainable, not a claim of real capacity-planning accuracy.
- */
 
-/**
- * simulateTrafficIncrease assumes a service's seeded/observed baseline
- * traffic represents this fraction of its real capacity — i.e. baseline
- * traffic already uses 1/3 of what the service can handle before it starts
- * degrading. Chosen so a 2x traffic multiplier pushes a healthy service
- * into "degraded", and a 3x+ multiplier pushes it to "down" (overloaded).
- */
 export const TRAFFIC_CAPACITY_MULTIPLIER = 3;
 
 /** Utilization ratio (projected traffic / capacity) above which a service is considered overloaded ("down") rather than merely "degraded". */

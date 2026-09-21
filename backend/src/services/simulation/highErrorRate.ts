@@ -2,14 +2,7 @@ import { bfsClosure } from './graph';
 import { ERROR_RATE_OUTAGE_PERCENT, PROPAGATION_DECAY_FACTOR } from './constants';
 import type { SimulationServiceState, SimulationResult, SimulatedServiceImpact } from './types';
 
-/**
- * docs/architecture.md §11's "high error rate" simulation type:
- * `serviceName` starts failing a fraction of its requests, and every
- * service that depends on it inherits a decayed share of that excess error
- * rate (a request chain through two failing hops fails more than one, but
- * this model doesn't compound multiplicatively — it's a simple additive
- * decay, matching simulateHighLatency's propagation shape for consistency).
- */
+
 export function simulateHighErrorRate(
   services: SimulationServiceState[],
   serviceName: string,
@@ -25,10 +18,7 @@ export function simulateHighErrorRate(
     throw new Error(`Unknown service "${serviceName}"`);
   }
 
-  // A 0% baseline error rate has nothing to multiply, so give it a small
-  // floor first — otherwise errorRateMultiplier would have no effect at
-  // all on an already-perfect service, which would be a misleading result
-  // for a scenario that's specifically about error rate going up.
+ 
   const effectiveBaseline = Math.max(origin.health.errorRatePercent, 0.1);
   const projectedErrorRatePercent = Math.min(100, Math.round(effectiveBaseline * errorRateMultiplier * 100) / 100);
   const originStatus = projectedErrorRatePercent >= ERROR_RATE_OUTAGE_PERCENT ? 'down' : errorRateMultiplier > 1 ? 'degraded' : 'healthy';

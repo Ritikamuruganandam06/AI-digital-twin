@@ -1,14 +1,7 @@
 import { calculateBlastRadius } from './blastRadius';
 import type { SimulationServiceState, SimulationResult, SimulatedServiceImpact } from './types';
 
-/**
- * docs/architecture.md §10's `simulate_service_failure` tool: `serviceName`
- * fails outright, and — since every dependency in this topology is treated
- * as required, not optional (docs/architecture.md §1: this models a real
- * e-commerce checkout path, where a missing Payment Service genuinely means
- * no orders complete) — every service that depends on it, directly or
- * transitively, goes down too.
- */
+
 export function simulateServiceFailure(services: SimulationServiceState[], serviceName: string): SimulationResult {
   const byName = new Map(services.map((s) => [s.name, s]));
   const origin = byName.get(serviceName);

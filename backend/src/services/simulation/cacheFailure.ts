@@ -2,17 +2,7 @@ import { cascadeFromOrigins } from './graph';
 import { CACHE_FAILURE_LATENCY_MULTIPLIER, CACHE_FAILURE_ERROR_RATE_MULTIPLIER, PROPAGATION_DECAY_FACTOR } from './constants';
 import type { SimulationServiceState, SimulationResult, SimulatedServiceImpact } from './types';
 
-/**
- * docs/architecture.md §10's `simulate_cache_failure` tool. Unlike a
- * database failure, this deliberately does NOT mark anything "down" —
- * it mirrors the real cache-aside fallback this codebase actually
- * implements (src/cache/cacheAside.ts: a Redis outage makes
- * getOrSetCache() fall back to the real fetcher and report a miss, it
- * never fails the request). Every service that depends on the cache
- * (dependsOnCache — defaults to true) gets slower, and that slowdown
- * propagates a smaller, decayed amount to their dependents, same
- * propagation shape as simulateHighLatency.
- */
+
 export function simulateCacheFailure(services: SimulationServiceState[]): SimulationResult {
   const directlyAffected = services.filter((s) => s.dependsOnCache !== false);
   const directNames = new Set(directlyAffected.map((s) => s.name));

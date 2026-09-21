@@ -50,15 +50,7 @@ export function extractRetrievedDocuments(response: AgentInvokeResponse): Retrie
   return documents;
 }
 
-/**
- * Maps ai-service's steps onto this schema's step shape 1:1 -- camelCase
- * field names and a parsed Date instead of an ISO string are the only
- * differences, deliberately not a re-interpretation of the data.
- * `timestamp` falls back to `receivedAt` only if a step's timestamp is
- * missing or unparseable (e.g. an older ai-service build without Phase
- * 14's ToolCallStep.timestamp field) -- forward/backward tolerance, not
- * the expected path.
- */
+
 export function toStepRecords(response: AgentInvokeResponse, receivedAt: Date): AgentExecutionStepRecord[] {
   return response.steps.map((step) => {
     const parsed = new Date(step.timestamp);
@@ -83,10 +75,6 @@ export async function askAssistant(input: AskAssistantInput): Promise<AgentExecu
     response = await aiServiceClient.invokeAgent(question);
   } catch (err) {
     if (err instanceof AiServiceUnavailableError) {
-      // Nothing resembling an execution happened -- the request never
-      // reached ai-service's run_agent() at all -- so nothing is
-      // persisted here, unlike the groq_error case below (which DID run
-      // the agent loop, just failed inside it, and is a real trace).
       throw new AppError(`AI service is unavailable: ${err.message}`, 502);
     }
     throw err;
