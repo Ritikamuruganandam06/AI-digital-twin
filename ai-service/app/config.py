@@ -1,20 +1,4 @@
-"""
-Environment-driven configuration for the AI service.
 
-Phase 8 (docs/phases.md row 8) needed ENV, PORT, BACKEND_BASE_URL, and
-LOG_LEVEL. Phase 9 (row 9) added LLM_PROVIDER, LLM_MODEL, and
-GROQ_API_KEY. Phase 10 (row 10) adds AGENT_MAX_ITERATIONS and
-AGENT_TOOL_TIMEOUT_MS -- the hard caps docs/architecture.md §8 step 6
-requires ("repeat until Llama produces a final answer or an
-iteration/timeout limit is hit"). Phase 11 (row 11) adds QDRANT_URL,
-QDRANT_COLLECTION, and EMBEDDING_MODEL for app/rag/.
-
-This is the ONE place ai-service/.env gets loaded into the process
-environment, mirroring how the Node backend's src/config/env.ts is the
-one place it calls dotenv.config() -- every other module reads
-configuration through get_settings(), never by reading os.environ or
-ai-service/.env directly itself.
-"""
 
 from __future__ import annotations
 
