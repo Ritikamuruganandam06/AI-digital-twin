@@ -1,33 +1,3 @@
-"""
-Groq chat-completion client (docs/phases.md row 9: "Groq client,
-configurable model, basic chat completion").
-
-Scope discipline: this module ONLY sends chat messages to Groq's Chat
-Completions endpoint and returns the reply. It does not offer Groq any
-tool schemas, does not decide when to call a tool, does not touch RAG/
-Qdrant, and is not wired into the agent loop -- that orchestration starts
-in Phase 10 (docs/architecture.md §8, §10). Per docs/architecture.md §9,
-the LLM's job is strictly reasoning/explanation; it is never the source
-of a simulation number or metric value, so nothing in this module (or
-anywhere else in the AI service) manufactures application data -- it only
-relays messages to Groq and returns what comes back.
-
-Plain httpx against Groq's OpenAI-compatible REST API, the same style as
-app/clients/backend_client.py, rather than adding the `groq` SDK as a
-dependency for what is currently a single endpoint call (ground rule: no
-unnecessary frameworks/dependencies).
-
-Phase 16 wraps the network call with a retry (connection failures only,
-never a timeout or a non-2xx -- same narrow scope as
-app/tools/backend_tools_client.py's `_request()`) and a circuit breaker.
-Groq is the clearest, most concrete justification of the three Phase 16
-circuit-breaker application points: it is CONFIRMED blocked/unreachable
-in this sandbox (see ai-service/README.md's "What could and couldn't be
-verified here"), so a breaker here directly improves this sandbox's own
-observed behavior -- every agent iteration that calls Groq while it's
-down fails fast instead of each paying its own _REQUEST_TIMEOUT_SECONDS
-wait.
-"""
 
 from __future__ import annotations
 

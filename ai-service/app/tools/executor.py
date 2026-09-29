@@ -1,38 +1,3 @@
-"""
-Tool call execution and privilege enforcement (docs/phases.md row 10:
-"tool execution loop against backend tool API"; row 13:
-"search_knowledge_base"; docs/architecture.md §10: "the grouping is
-enforced, not just documented").
-
-`execute_tool_call(name, arguments)` is the one function app/agent/loop.py
-calls for every tool_call Groq returns. It never raises: a bad tool name,
-bad arguments, a real backend failure, or a RAG (embedding/Qdrant) failure
-all come back as a structured `{"error": "..."}` result instead, so one
-failed tool call can be fed back to the LLM as an observation (the same
-"handle failures cleanly, don't crash the process" rule Phase 8's
-backend_client.py established) rather than crashing the whole agent loop.
-
-Privilege enforcement lives here, not in schemas.py (which only
-describes tools to the LLM) and not in backend_tools_client.py (which
-only knows how to make HTTP calls): PRIVILEGED_MUTATING tools
-(create_incident) are never actually executed by this dispatcher, no
-matter how the LLM calls them -- see docs/architecture.md §10: "the agent
-can *propose* one but cannot silently execute it." Read-only, simulation,
-KNOWLEDGE_RETRIEVAL (search_knowledge_base), and PRIVILEGED_SAFE tools
-(recommend_scaling, which only ever returns a recommendation) execute for
-real.
-
-search_knowledge_base is dispatched differently from every other tool
-here: every other tool goes through backend_tools_client (an HTTP call to
-the Node backend); search_knowledge_base calls app/rag/retriever.py
-in-process instead, since RAG is the AI service's own responsibility
-(docs/architecture.md §2, §15) and never crosses the backend boundary.
-retrieve() is a synchronous, potentially CPU-bound (local embedding) call,
-so it runs via asyncio.to_thread rather than blocking the event loop the
-way every other (already-async, HTTP-bound) tool handler here does not
-need to.
-"""
-
 from __future__ import annotations
 
 import asyncio

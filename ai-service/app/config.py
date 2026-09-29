@@ -45,25 +45,12 @@ def get_settings() -> Settings:
         port=int(os.getenv("PORT", "8000")),
         backend_base_url=os.getenv("BACKEND_BASE_URL", "http://localhost:4000").rstrip("/"),
         log_level=os.getenv("LOG_LEVEL", "info"),
-        # docs/architecture.md §9: "The specific Groq-hosted Llama model is
-        # configured via LLM_MODEL (not hardcoded)". llama-3.3-70b-versatile
-        # is Groq's current production Llama model as of this phase
-        # (console.groq.com/docs/models) -- a default, not a hardcoded
-        # dependency: any value in LLM_MODEL overrides it.
         llm_provider=os.getenv("LLM_PROVIDER", "groq"),
-        llm_model=os.getenv("LLM_MODEL", "llama-3.3-70b-versatile"),
-        # No default for the key itself -- an empty string means "not
-        # configured" and groq_client.py refuses to call out with it.
+        llm_model=os.getenv("LLM_MODEL", "openai/gpt-oss-120b"),
         groq_api_key=os.getenv("GROQ_API_KEY", ""),
-        # docs/env-vars.md defaults, first read starting Phase 10.
         agent_max_iterations=int(os.getenv("AGENT_MAX_ITERATIONS", "6")),
         agent_tool_timeout_ms=int(os.getenv("AGENT_TOOL_TIMEOUT_MS", "10000")),
-        # Phase 11 (docs/env-vars.md defaults).
         qdrant_url=os.getenv("QDRANT_URL", "http://localhost:6333").rstrip("/"),
         qdrant_collection=os.getenv("QDRANT_COLLECTION", "knowledge_base"),
-        # BAAI/bge-small-en-v1.5: a small (~130MB), fast, CPU-only ONNX
-        # embedding model (384 dims) -- chosen and justified in
-        # app/rag/embedding.py's own module docstring. Configurable, not
-        # hardcoded elsewhere, same pattern as LLM_MODEL.
         embedding_model=os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5"),
     )
