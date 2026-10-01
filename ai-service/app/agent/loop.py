@@ -1,31 +1,3 @@
-"""
-The agent orchestration loop (docs/phases.md row 10: "tool execution loop
-against backend tool API"; row 13: "Full decision logic (tools/RAG/both/
-neither)"; docs/architecture.md §8, §14).
-
-RAG (§8 step 4) is now wired in as of Phase 13 -- not as a second,
-separately-invoked code path, but as one more entry in TOOL_SCHEMAS
-(search_knowledge_base, app/tools/schemas.py). Per §14, "This decision is
-made by the LLM itself via the tool-calling interface ... rather than a
-separate hardcoded classifier": there is no if/else here routing
-questions to "tools" vs "RAG" -- the same tool-calling loop that has
-handled backend tools since Phase 10 now also offers search_knowledge_base,
-and SYSTEM_PROMPT below is what teaches Groq when each kind is warranted.
-Persisting a full execution trace to MongoDB (§8 step 7, §16) is the Node
-backend's job (§15: this service has no MongoDB client), done in Phase 14
-by backend/src/services/assistant.service.ts, which calls POST
-/agent/invoke and persists exactly what comes back. §16 asks for steps
-"with timestamps" -- ToolCallStep.timestamp (added this phase) is a real
-capture time set the moment each step is recorded below, not a value the
-backend has to invent afterward.
-
-The loop never lets the LLM's own text stand in for real data (§1: "The
-LLM never invents numbers... every quantitative claim traces back to a
-tool call") -- it only ever sends the LLM tool/RAG results that actually
-came back from app/tools/executor.py, which only ever calls the real
-backend or the real (Phase 11/12) embedding+Qdrant pipeline.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -78,12 +50,6 @@ class ToolCallStep:
     arguments: dict[str, Any]
     result: dict[str, Any]
     is_rag_query: bool = False
-    # docs/architecture.md §16: persisted steps need "timestamps". Populated
-    # by this default_factory at the moment run_agent() constructs the step
-    # below -- i.e. right after the real tool call returns -- so it's a
-    # genuine capture time, not a value invented later by whoever persists
-    # it (Phase 14's backend service). Direct construction elsewhere (tests)
-    # still works without passing one explicitly.
     timestamp: str = field(default_factory=_now_iso)
 
 
@@ -143,9 +109,7 @@ async def run_agent(question: str) -> AgentResult:
                 stopped_reason="final_answer",
             )
 
-        # Echo the assistant's tool-call request back into the conversation
-        # verbatim (OpenAI/Groq's protocol requires this before any "tool"
-        # role messages responding to it can be sent).
+      
         messages.append({"role": "assistant", "content": message.get("content"), "tool_calls": tool_calls})
 
         for tool_call in tool_calls:
