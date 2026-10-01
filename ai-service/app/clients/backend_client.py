@@ -1,20 +1,4 @@
-"""
-HTTP boundary between the AI service and the Node.js backend.
 
-This is the ONLY way the AI service is allowed to reach live system data.
-Per docs/architecture.md SS15 ("AI service / backend boundary"), this
-service has no MongoDB/Redis/Kafka client and never will -- every piece
-of data it eventually sees must first pass through the backend's own
-validation/auth/business logic via a plain HTTP call like this one.
-Phase 8 only proves the boundary exists and works end to end; later
-phases add an LLM/agent/tool-calling layer on top of this module, not a
-second way to reach the backend's data.
-
-Deliberately framework-agnostic (no FastAPI/HTTPException here), the same
-style used for backend/src/services/simulation in Phase 7 -- callers
-(app/api routers) decide how to turn BackendUnavailableError into an HTTP
-response.
-"""
 
 from __future__ import annotations
 

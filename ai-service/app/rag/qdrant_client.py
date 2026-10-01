@@ -1,22 +1,3 @@
-"""
-The second half of Phase 11 (docs/phases.md row 11: "Qdrant client,
-embedding pipeline"). A thin wrapper around the real `qdrant-client`
-library, talking to a real Qdrant instance at QDRANT_URL -- never an
-in-memory/local-mode stand-in in application code. This project's
-standing rule ("MongoDB/Redis/Kafka must be REAL application
-dependencies, never faked") applies here too: every other real dependency
-(Mongo, Redis, Kafka) is reached in application code as a real running
-process, and Qdrant is no different -- this module never uses
-`qdrant_client.QdrantClient(":memory:")` or a `path=` local-storage
-fallback anywhere outside a test's own explicit negative-proof setup (see
-tests/test_qdrant_client.py's module docstring for why the tests
-themselves also avoid it).
-
-docs/architecture.md §13: "Qdrant does exactly one job: vector similarity
-search over embedded knowledge-base chunks. It is not a general
-application database... and it is not a cache." Nothing here stores or
-searches anything except vectors + their payload metadata.
-"""
 
 from __future__ import annotations
 

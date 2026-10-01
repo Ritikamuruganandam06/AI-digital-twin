@@ -1,20 +1,3 @@
-"""
-Ties loader.py + chunker.py + embedding.py + qdrant_client.py together:
-walks `knowledge/`, chunks every document, embeds every chunk, and
-upserts the results into Qdrant. This is docs/phases.md row 12's
-"knowledge/ documents ingested" half; retriever.py is the "retriever"
-half that reads what this writes.
-
-Run directly (from ai-service/, with the venv active):
-
-    python -m app.rag.ingest
-
-See ai-service/README.md's Phase 12 section for what this requires (a
-real Qdrant instance at QDRANT_URL, and outbound access to
-huggingface.co for the embedding model's one-time weight download) and
-what happened when it was run in this project's build sandbox, where
-neither is reachable.
-"""
 
 from __future__ import annotations
 

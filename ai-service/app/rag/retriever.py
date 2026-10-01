@@ -1,19 +1,4 @@
-"""
-docs/phases.md row 12's "retriever" deliverable, and the phase's actual
-verification target: "Question -> relevant chunks retrieved". Embeds a
-question, searches Qdrant (ingested by app/rag/ingest.py), and applies a
-relevance-score filter -- docs/architecture.md §12's "Relevance
-filtering" step in the retrieval flow diagram -- before returning
-results, so a low-scoring, barely-related match isn't dressed up as
-grounding: docs/architecture.md §1 is explicit that "the LLM never
-invents... every quantitative claim traces back to a tool call", and
-handing the LLM an irrelevant chunk as if it answered the question would
-undermine that same spirit for the RAG side of things.
 
-Not wired into the agent loop here -- deciding *when* to call this at all
-(versus tools, versus both, versus neither) is Phase 13's job ("Agent +
-Tools + RAG orchestration").
-"""
 
 from __future__ import annotations
 

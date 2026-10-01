@@ -1,31 +1,3 @@
-"""
-Reads and parses `knowledge/*.md` documents (docs/architecture.md §4:
-"knowledge/ Markdown source documents for RAG ingestion", subfoldered
-into architecture/runbooks/incidents/troubleshooting per
-knowledge/README.md's planned structure).
-
-Each document starts with a small, hand-rolled frontmatter block (plain
-`key: value` lines between `---` delimiters -- deliberately not YAML: the
-schema is three flat string fields, and adding a `pyyaml` dependency for
-that would be exactly the kind of unnecessary-dependency scope creep this
-project's ground rules rule out):
-
-    ---
-    title: Payment Service Recovery Runbook
-    related_service: payment-service
-    updated: 2026-02-20
-    ---
-
-    # Payment Service Recovery Runbook
-    ...body...
-
-`document_type` (the folder a file lives in) and `document_id`/
-`source_path` (its path) are derived from the file's own location on
-disk, never read from frontmatter -- the folder structure IS the type, by
-the structure knowledge/README.md already documents, so there's no
-independent "type" a document's frontmatter could set that would ever
-legitimately disagree with where the file actually lives.
-"""
 
 from __future__ import annotations
 
